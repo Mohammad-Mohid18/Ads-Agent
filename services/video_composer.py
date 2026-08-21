@@ -12,6 +12,11 @@ import httpx
 
 from models import BrandAssets, EditRequest, Script, Storage, VideoProject, VoiceResult
 from services.asset_storage import download_url_bytes, upload_bytes
+from services.visual_sanitizer import (
+    clean_asset_url,
+    sanitize_audio_url,
+    sanitize_image_list,
+)
 
 logger = logging.getLogger("ai_ad_engine.video")
 
@@ -58,14 +63,22 @@ async def build_and_render_video(
     voice: VoiceResult,
 ) -> str:
     """Submit a Creatomate render, wait for completion, upload MP4 to Supabase."""
-    image_urls = _collect_image_urls(script, assets)
-    voice_url = voice.full_audio_url or (voice.segments[0].audio_url if voice.segments else None)
-    if not voice_url or not voice_url.startswith("https://"):
-        raise RuntimeError("Voiceover URL must be a public HTTPS URL for Creatomate")
+    raw_images = _collect_image_urls(script, assets)
+    prompts = [scene.visual_prompt for scene in script.scenes]
+    image_urls = await sanitize_image_list(
+        raw_images,
+        prompts,
+        aspect_ratio=project.aspect_ratio or "16:9",
+    )
+    # Persist sanitized public URLs back onto the script for status/debug.
+    for scene, url in zip(script.scenes, image_urls):
+        scene.image_url = url
 
-    for idx, url in enumerate(image_urls):
-        if not url or not str(url).startswith("https://"):
-            raise RuntimeError(f"Scene image {idx + 1} must be a public HTTPS URL for Creatomate")
+    raw_voice = voice.full_audio_url or (voice.segments[0].audio_url if voice.segments else None)
+    voice_url = await sanitize_audio_url(raw_voice)
+    voice.full_audio_url = voice_url
+    for segment in voice.segments:
+        segment.audio_url = voice_url
 
     if CREATOMATE_RENDER_MODE == "template" and CREATOMATE_TEMPLATE_ID:
         body = _build_template_payload(script, image_urls, voice_url)
@@ -73,7 +86,7 @@ async def build_and_render_video(
         body = _build_renderscript_payload(project, script, image_urls, voice_url)
 
     project.layers = {
-        "mode": body.get("template_id") and "template" or "renderscript",
+        "mode": "template" if body.get("template_id") else "renderscript",
         "modifications": body.get("modifications"),
         "image_urls": image_urls,
         "voiceover_url": voice_url,
@@ -116,7 +129,7 @@ async def build_and_render_video(
         **(project.layers or {}),
         "creatomate_render_id": render_id,
         "creatomate_url": remote_url,
-        "supabase_url": stored_url,
+        "supabase_url": clean_asset_url(stored_url) or stored_url,
         "storage_path": object_path,
     }
     logger.info("Creatomate render saved to Supabase %s", object_path)

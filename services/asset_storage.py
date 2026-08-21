@@ -1,4 +1,4 @@
-"""Upload media bytes to Supabase Storage and return HTTPS URLs Creatomate can fetch."""
+"""Upload media bytes to Supabase Storage and return clean public HTTPS URLs."""
 from __future__ import annotations
 
 import logging
@@ -19,7 +19,6 @@ SUPABASE_KEY = (
     or ""
 )
 BUCKET = os.getenv("SUPABASE_RENDER_BUCKET") or os.getenv("S3_BUCKET", "ad-assets")
-SIGNED_URL_TTL = int(os.getenv("SUPABASE_SIGNED_URL_TTL", "86400"))
 
 
 def _headers(*, content_type: Optional[str] = None) -> dict[str, str]:
@@ -33,12 +32,21 @@ def _headers(*, content_type: Optional[str] = None) -> dict[str, str]:
     return headers
 
 
+def public_object_url(object_path: str) -> str:
+    """Stable Creatomate-safe public URL — no /sign/ path and no ?token= query."""
+    object_path = object_path.lstrip("/")
+    return (
+        f"{SUPABASE_URL}/storage/v1/object/public/{BUCKET}/"
+        f"{quote(object_path, safe='/')}"
+    )
+
+
 async def upload_bytes(
     object_path: str,
     data: bytes,
     content_type: str,
 ) -> str:
-    """Upload to the private ad-assets bucket and return a long-lived signed HTTPS URL."""
+    """Upload to the public ad-assets bucket and return a clean public HTTPS URL."""
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise RuntimeError("Supabase credentials are not configured for asset upload")
 
@@ -53,25 +61,9 @@ async def upload_bytes(
                 f"Supabase upload failed ({response.status_code}): {response.text[:300]}"
             )
 
-        # Prefer a signed URL so Creatomate can fetch from a private bucket.
-        sign_url = f"{SUPABASE_URL}/storage/v1/object/sign/{BUCKET}/{object_path}"
-        signed = await client.post(
-            sign_url,
-            headers=_headers(content_type="application/json"),
-            json={"expiresIn": SIGNED_URL_TTL},
-        )
-        if not signed.is_error:
-            payload = signed.json()
-            token_path = payload.get("signedURL") or payload.get("signedUrl") or ""
-            if token_path.startswith("http"):
-                return token_path
-            if token_path:
-                return f"{SUPABASE_URL}/storage/v1{token_path}"
-
-        # Fallback: public object URL (works only if the bucket/object is public).
-        public = f"{SUPABASE_URL}/storage/v1/object/public/{BUCKET}/{quote(object_path)}"
-        logger.warning("Signed URL unavailable; falling back to public URL for %s", object_path)
-        return public
+    public_url = public_object_url(object_path)
+    logger.info("Uploaded public asset %s", public_url)
+    return public_url
 
 
 async def download_url_bytes(url: str) -> bytes:

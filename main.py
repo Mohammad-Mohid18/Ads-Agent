@@ -87,17 +87,19 @@ async def _run_full_pipeline(ad_id: str, payload: GenerateRequest):
         project.script = script
         storage.save_project(project)
 
-        # 3. fal.ai visuals for each scene visual_prompt
-        await generate_scene_visuals(script, assets, project_id=ad_id)
+        # 3. Resolve/sanitize scene visuals (fal.ai + broken-image healing)
+        await generate_scene_visuals(
+            script, assets, project_id=ad_id, aspect_ratio=payload.aspect_ratio
+        )
         project.script = script
         storage.save_project(project)
 
-        # 4. ElevenLabs TTS -> Supabase audio URL
+        # 4. ElevenLabs TTS -> public Supabase audio URL
         voice = await synthesize_voice_for_script(script, project_id=ad_id)
         project.voice = voice
         storage.save_project(project)
 
-        # 5. Creatomate render -> Supabase MP4
+        # 5. Sanitize assets again + Creatomate render -> Supabase MP4
         preview = await build_and_render_video(project, assets, script, voice)
         project.preview_url = preview
         project.status = "ready"

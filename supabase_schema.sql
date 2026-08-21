@@ -63,8 +63,8 @@ alter table public.ad_scripts enable row level security;
 alter table public.ad_voiceovers enable row level security;
 alter table public.ad_renders enable row level security;
 
--- Private bucket for the MP4 files. The API streams files using its service key,
--- so the bucket does not need to be publicly accessible.
+-- Public bucket so Creatomate can fetch images/audio via clean
+-- /storage/v1/object/public/ad-assets/... URLs (no signed ?token= query strings).
 insert into storage.buckets (id, name, public)
-values ('ad-assets', 'ad-assets', false)
-on conflict (id) do nothing;
+values ('ad-assets', 'ad-assets', true)
+on conflict (id) do update set public = excluded.public;
