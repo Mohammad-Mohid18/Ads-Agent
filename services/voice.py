@@ -1,14 +1,17 @@
-"""Text-to-speech via ElevenLabs with Supabase audio storage."""
+"""Text-to-speech with per-scene duration measurement and script timing sync."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import tempfile
 import uuid
+from io import BytesIO
 from pathlib import Path
 from typing import List
 
 import httpx
+from mutagen.mp3 import MP3
 
 from models import Script, VoiceResult, VoiceSegment
 from services.asset_storage import upload_bytes
@@ -25,58 +28,185 @@ ALLOW_TTS_FALLBACK = (os.getenv("ALLOW_TTS_FALLBACK") or "1").strip().lower() in
     "true",
     "yes",
 }
+# Small pad so text overlays never cut off before audio ends.
+SCENE_TAIL_PAD_SEC = float(os.getenv("SCENE_AUDIO_TAIL_PAD", "0.15"))
+MIN_SCENE_DURATION = 1.2
 
 
 def _tts_api_key() -> str | None:
     return os.getenv("TTS_API_KEY") or os.getenv("ELEVENLABS_API_KEY")
 
 
-async def synthesize_voice_for_script(script: Script, project_id: str) -> VoiceResult:
-    """Synthesize a full-script voiceover (and per-scene mirrors) for Creatomate."""
-    provider = (os.getenv("TTS_PROVIDER") or TTS_PROVIDER).strip().lower()
-    full_text = " ".join(scene.text.strip() for scene in script.scenes if scene.text.strip())
-    if not full_text:
-        raise ValueError("Script has no text to synthesize")
+def measure_mp3_duration(audio_bytes: bytes) -> float:
+    """Return audio duration in seconds from in-memory bytes using mutagen."""
+    try:
+        audio = MP3(BytesIO(audio_bytes))
+        length = float(audio.info.length or 0.0)
+        if length > 0:
+            return length
+    except Exception as exc:
+        logger.debug("mutagen.mp3.MP3 duration read failed: %s, trying mutagen.File", exc)
 
-    if provider == "elevenlabs":
-        try:
-            audio_bytes = await _elevenlabs_tts(full_text)
-        except Exception as exc:
-            if not ALLOW_TTS_FALLBACK:
-                raise
-            logger.error(
-                "ElevenLabs TTS failed (%s). Falling back to edge-tts so the pipeline can finish. "
-                "Replace TTS_API_KEY with a valid ElevenLabs key.",
-                exc,
-            )
-            audio_bytes = await _edge_tts(full_text)
-    elif provider in {"edge", "edge-tts"}:
-        audio_bytes = await _edge_tts(full_text)
-    else:
-        raise RuntimeError(
-            f"Unsupported TTS_PROVIDER={provider!r}. Use elevenlabs or edge."
+    try:
+        import mutagen
+        audio_file = mutagen.File(BytesIO(audio_bytes))
+        if audio_file and audio_file.info and getattr(audio_file.info, "length", 0) > 0:
+            return float(audio_file.info.length)
+    except Exception as exc:
+        logger.warning("mutagen.File duration read failed: %s", exc)
+
+    # Fallback estimate based on typical 128kbps MP3 bit rate if header parse fails
+    estimated = max(1.5, len(audio_bytes) / (128 * 1024 / 8))
+    logger.warning("Using bitrate duration estimation: %.2fs", estimated)
+    return estimated
+
+
+async def synthesize_voice_for_script(script: Script, project_id: str) -> VoiceResult:
+    """
+    Synthesize per-scene voiceovers, measure exact audio lengths, and rewrite
+    script.start/end/duration so Creatomate text overlays match the VO timeline.
+    Total video length expands dynamically with the spoken audio.
+    """
+    provider = (os.getenv("TTS_PROVIDER") or TTS_PROVIDER).strip().lower()
+    if not script.scenes:
+        raise ValueError("Script has no scenes to synthesize")
+
+    scene_audio: list[bytes] = []
+    measured: list[float] = []
+
+    for scene in script.scenes:
+        text = (scene.text or "").strip()
+        if not text:
+            text = "Learn more today."
+        audio_bytes = await _synthesize_text(provider, text)
+        duration = measure_mp3_duration(audio_bytes)
+        duration = max(duration + SCENE_TAIL_PAD_SEC, MIN_SCENE_DURATION)
+        scene_audio.append(audio_bytes)
+        measured.append(round(duration, 3))
+        logger.info(
+            "Scene %s (%s) audio duration=%.3fs (text_len=%d)",
+            scene.id[:8],
+            scene.role,
+            duration,
+            len(text),
         )
 
+    # Rewrite scene timeline to match real spoken lengths (may exceed 15s).
+    cursor = 0.0
+    for scene, duration in zip(script.scenes, measured):
+        scene.start = round(cursor, 3)
+        scene.end = round(cursor + duration, 3)
+        cursor += duration
+    script.duration = round(cursor, 3)
+    logger.info("Synced script timeline to voiceover total_duration=%.3fs", script.duration)
+
+    # Stitch per-scene MP3s into one continuous voiceover for Creatomate.
+    full_audio = await _stitch_mp3s(scene_audio)
     object_path = f"media/audio/{project_id}/voiceover_{uuid.uuid4().hex[:10]}.mp3"
-    audio_url = await upload_bytes(object_path, audio_bytes, "audio/mpeg")
-    logger.info("Uploaded voiceover -> %s (%d bytes)", object_path, len(audio_bytes))
+    audio_url = await upload_bytes(object_path, full_audio, "audio/mpeg")
+    logger.info("Uploaded synced voiceover -> %s (%d bytes)", object_path, len(full_audio))
 
     segments: List[VoiceSegment] = []
-    total = 0.0
-    for scene in script.scenes:
-        duration = round(max(scene.end - scene.start, 0.5), 3)
-        words = _approx_word_timestamps(scene.text, duration)
+    for scene, duration in zip(script.scenes, measured):
         segments.append(
             VoiceSegment(
                 scene_id=scene.id,
                 audio_url=audio_url,
                 duration=duration,
-                words=words,
+                words=_approx_word_timestamps(scene.text, duration),
             )
         )
-        total += duration
 
-    return VoiceResult(segments=segments, total_duration=total, full_audio_url=audio_url)
+    return VoiceResult(
+        segments=segments,
+        total_duration=script.duration,
+        full_audio_url=audio_url,
+    )
+
+
+async def _synthesize_text(provider: str, text: str) -> bytes:
+    if provider == "elevenlabs":
+        try:
+            return await _elevenlabs_tts(text)
+        except Exception as exc:
+            if not ALLOW_TTS_FALLBACK:
+                raise
+            logger.error(
+                "ElevenLabs TTS failed (%s). Falling back to edge-tts. "
+                "Replace TTS_API_KEY with a valid ElevenLabs key.",
+                exc,
+            )
+            return await _edge_tts(text)
+    if provider in {"edge", "edge-tts"}:
+        return await _edge_tts(text)
+    raise RuntimeError(f"Unsupported TTS_PROVIDER={provider!r}. Use elevenlabs or edge.")
+
+
+async def _stitch_mp3s(parts: list[bytes]) -> bytes:
+    """Concatenate MP3 segments with ffmpeg into a single stream."""
+    if len(parts) == 1:
+        return parts[0]
+
+    with tempfile.TemporaryDirectory(prefix="ad_voice_") as tmp:
+        tmp_path = Path(tmp)
+        list_file = tmp_path / "concat.txt"
+        inputs: list[Path] = []
+        for idx, blob in enumerate(parts):
+            path = tmp_path / f"part_{idx:02d}.mp3"
+            path.write_bytes(blob)
+            inputs.append(path)
+        list_file.write_text(
+            "\n".join(f"file '{p.resolve()}'" for p in inputs),
+            encoding="utf-8",
+        )
+        output = tmp_path / "full.mp3"
+        command = [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(list_file),
+            "-c",
+            "copy",
+            str(output),
+        ]
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await process.communicate()
+        if process.returncode != 0 or not output.is_file():
+            # Re-encode fallback when stream copy fails across encoder variants.
+            command = [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(list_file),
+                "-c:a",
+                "libmp3lame",
+                "-q:a",
+                "4",
+                str(output),
+            ]
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await process.communicate()
+            if process.returncode != 0 or not output.is_file():
+                raise RuntimeError(
+                    f"Failed to stitch scene voiceovers: {stderr.decode(errors='replace')[-400:]}"
+                )
+        return output.read_bytes()
 
 
 async def _elevenlabs_tts(text: str) -> bytes:

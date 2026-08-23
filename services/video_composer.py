@@ -160,13 +160,17 @@ def _build_template_payload(script: Script, image_urls: list[str], voice_url: st
     for idx, scene in enumerate(script.scenes):
         n = idx + 1
         modifications[f"Text-{n}"] = scene.text
+        # Clean unobtrusive typography scaled to ~40-48px range.
+        modifications[f"Text-{n}.font_size"] = "44 px"
         if idx < len(image_urls):
             modifications[f"Image-{n}"] = image_urls[idx]
     # Always fill Text-1 with the hook / concatenated headline for templates that only have Text-1/2.
     if script.scenes:
         modifications["Text-1"] = script.scenes[0].text
+        modifications["Text-1.font_size"] = "44 px"
         if len(script.scenes) > 1:
             modifications["Text-2"] = script.scenes[-1].text
+            modifications["Text-2.font_size"] = "40 px"
     return {
         "template_id": CREATOMATE_TEMPLATE_ID,
         "modifications": modifications,
@@ -196,8 +200,9 @@ def _build_renderscript_payload(
     ]
 
     cursor = 0.0
+    # Prefer voice-synced timeline (scene.start/end rewritten after TTS measurement).
     for idx, scene in enumerate(script.scenes):
-        duration = max(float(scene.end - scene.start), 1.5)
+        duration = max(float(scene.end - scene.start), 1.2)
         image_url = image_urls[idx]
         elements.append(
             {
@@ -235,23 +240,24 @@ def _build_renderscript_payload(
                         "type": "text",
                         "track": 2,
                         "text": scene.text,
-                        "width": "86%",
-                        "height": "40%",
+                        "width": "82%",
+                        "height": "24%",
                         "x": "50%",
-                        "y": "78%",
+                        "y": "80%",
                         "x_alignment": "50%",
                         "y_alignment": "50%",
                         "fill_color": "#FFFFFF",
                         "font_family": "Montserrat",
                         "font_weight": "700",
-                        "font_size": "6.2 vmin",
-                        "background_color": "rgba(0,0,0,0.45)",
-                        "background_x_padding": "6%",
-                        "background_y_padding": "4%",
+                        # Scaled down to ~45px (4.2 vmin at 1080p) for clean unobtrusive subtitles.
+                        "font_size": "4.2 vmin",
+                        "background_color": "rgba(0,0,0,0.40)",
+                        "background_x_padding": "4%",
+                        "background_y_padding": "3%",
                         "animations": [
                             {
                                 "time": 0,
-                                "duration": 0.45,
+                                "duration": min(0.4, duration * 0.2),
                                 "easing": "quadratic-out",
                                 "type": "text-slide",
                                 "direction": "up",
@@ -263,7 +269,7 @@ def _build_renderscript_payload(
                 "animations": [
                     {
                         "time": 0,
-                        "duration": 0.35,
+                        "duration": min(0.3, duration * 0.15),
                         "transition": True,
                         "type": "fade",
                     }
@@ -272,12 +278,14 @@ def _build_renderscript_payload(
         )
         cursor += duration
 
+    # Expand composition length to the voice-synced total (may exceed 15s).
+    total_duration = max(cursor, float(script.duration or 0.0), 1.0)
     source = {
         "output_format": "mp4",
         "width": width,
         "height": height,
         "frame_rate": 30,
-        "duration": cursor,
+        "duration": total_duration,
         "elements": elements,
     }
     return {"source": source}

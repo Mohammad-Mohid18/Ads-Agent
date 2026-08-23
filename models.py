@@ -17,46 +17,47 @@ PROJECT_DB = os.path.join(DATA_DIR, "projects.json")
 
 
 class BrandAssets(BaseModel):
-    site_title: Optional[str]
-    description: Optional[str]
-    logo_url: Optional[str]
-    product_images: List[str] = []
-    primary_color: Optional[str]
-    raw_text_snippet: Optional[str]
+    site_title: Optional[str] = None
+    description: Optional[str] = None
+    logo_url: Optional[str] = None
+    product_images: List[str] = Field(default_factory=list)
+    primary_color: Optional[str] = None
+    raw_text_snippet: Optional[str] = None
 
 
 class Scene(BaseModel):
     id: str
-    start: float
-    end: float
-    role: str  # hook/problem/solution/cta
-    text: str
+    start: float = 0.0
+    end: float = 0.0
+    role: str = "hook"  # hook/problem/solution/cta
+    text: str = ""
     visual_prompt: str = Field(..., min_length=1)  # Must NOT be null
     image_url: Optional[str] = None
 
 
 class Script(BaseModel):
-    duration: float
-    scenes: List[Scene]
+    duration: float = 0.0
+    scenes: List[Scene] = Field(default_factory=list)
+    business_category: Optional[str] = None
 
 
 class VoiceSegment(BaseModel):
     scene_id: str
     audio_url: str
-    duration: float
-    words: List[Dict[str, Any]]  # word-level timestamps
+    duration: float = 0.0
+    words: List[Dict[str, Any]] = Field(default_factory=list)  # word-level timestamps
 
 
 class VoiceResult(BaseModel):
-    segments: List[VoiceSegment]
-    total_duration: float
+    segments: List[VoiceSegment] = Field(default_factory=list)
+    total_duration: float = 0.0
     full_audio_url: Optional[str] = None
 
 
 class VideoProject(BaseModel):
     id: str
     source_url: Optional[str] = None
-    aspect_ratio: Optional[str] = None
+    aspect_ratio: Optional[str] = "16:9"
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: Optional[datetime] = None
     status: str = "processing"

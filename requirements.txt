@@ -8,3 +8,4 @@ python-dotenv>=1.0,<2.0
 fal-client>=0.5,<1.0
 supabase>=2.0,<3.0
 edge-tts>=6.1,<8.0
+mutagen>=1.47,<2.0

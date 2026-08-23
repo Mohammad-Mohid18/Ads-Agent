@@ -1,4 +1,4 @@
-"""Script generation via OpenRouter with strict visual_prompt validation."""
+"""Script generation via OpenRouter with business category + visual_prompt validation."""
 from __future__ import annotations
 
 import json
@@ -20,6 +20,7 @@ LLM_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free")
 SYSTEM_PROMPT = """You are an expert video-ad creative director.
 Return ONLY valid JSON (no markdown fences) with this exact shape:
 {
+  "business_category": "<concise niche label, e.g. E-commerce SaaS, Local Coffee Shop, Fintech Platform, Fitness Brand>",
   "scenes": [
     {
       "role": "hook" | "problem" | "solution" | "cta",
@@ -31,8 +32,9 @@ Return ONLY valid JSON (no markdown fences) with this exact shape:
 }
 
 Hard rules:
+- Always include business_category based on the scraped brand context.
 - Produce 4 scenes: hook, problem, solution, cta.
-- Total duration between 15 and 30 seconds.
+- Scene duration values are planning estimates only (voice timing will be measured later).
 - Every scene MUST include a non-empty visual_prompt string.
 - visual_prompt must NEVER be null, empty, or omitted.
 - visual_prompt must describe a concrete cinematic advertising still grounded in the brand:
@@ -60,7 +62,7 @@ async def generate_script(assets: BrandAssets, aspect_ratio: str = "16:9") -> Sc
             {"role": "user", "content": _build_prompt(assets, aspect_ratio)},
         ],
         "temperature": 0.35,
-        "max_tokens": 1200,
+        "max_tokens": 1400,
         "response_format": {"type": "json_object"},
     }
     try:
@@ -91,12 +93,40 @@ def _parse_json_content(content: str) -> dict:
     try:
         return json.loads(content)
     except json.JSONDecodeError:
-        # Recover JSON object buried in prose / truncated fences.
         start = content.find("{")
         end = content.rfind("}")
         if start >= 0 and end > start:
             return json.loads(content[start : end + 1])
         raise
+
+
+def infer_business_category(assets: BrandAssets) -> str:
+    """Heuristic niche classification from scraped brand context."""
+    blob = " ".join(
+        filter(
+            None,
+            [
+                assets.site_title or "",
+                assets.description or "",
+                assets.raw_text_snippet or "",
+            ],
+        )
+    ).lower()
+    rules = [
+        (("coffee", "cafe", "espresso", "bakery"), "Local Coffee Shop"),
+        (("fitness", "gym", "workout", "yoga"), "Fitness Brand"),
+        (("bank", "finance", "fintech", "trading", "stock", "invest"), "Fintech Platform"),
+        (("saas", "software", "cloud", "api", "platform"), "E-commerce SaaS"),
+        (("shop", "store", "ecommerce", "e-commerce", "retail"), "E-commerce Brand"),
+        (("education", "school", "course", "learn", "coding", "club"), "Education Platform"),
+        (("health", "clinic", "medical", "dental"), "Healthcare Brand"),
+        (("travel", "hotel", "tour"), "Travel Brand"),
+    ]
+    for keywords, label in rules:
+        if any(k in blob for k in keywords):
+            return label
+    brand = assets.site_title or "Business"
+    return f"{brand} Brand"
 
 
 def _coerce_visual_prompt(raw: object, role: str, text: str, assets: BrandAssets) -> str:
@@ -111,6 +141,7 @@ def _coerce_visual_prompt(raw: object, role: str, text: str, assets: BrandAssets
 
 
 def _scenes_from_parsed(parsed: dict, assets: BrandAssets) -> Script:
+    category = str(parsed.get("business_category") or "").strip() or infer_business_category(assets)
     scenes: list[Scene] = []
     t = 0.0
     for item in parsed.get("scenes", []):
@@ -131,13 +162,13 @@ def _scenes_from_parsed(parsed: dict, assets: BrandAssets) -> Script:
         t += duration
     if not scenes:
         return _heuristic_script(assets)
-    # Re-validate through Pydantic so null/empty visual_prompt cannot slip through.
-    return Script(duration=t, scenes=scenes)
+    return Script(duration=t, scenes=scenes, business_category=category)
 
 
 def _heuristic_script(assets: BrandAssets) -> Script:
     """Always-available fallback so an LLM outage cannot stop an ad job."""
     brand = assets.site_title or "this product"
+    category = infer_business_category(assets)
     durations = [3.5, 6.0, 7.5, 3.0]
     roles = ["hook", "problem", "solution", "cta"]
     texts = [
@@ -166,17 +197,17 @@ def _heuristic_script(assets: BrandAssets) -> Script:
             )
         )
         t += duration
-    return Script(duration=t, scenes=scenes)
+    return Script(duration=t, scenes=scenes, business_category=category)
 
 
 def _build_prompt(assets: BrandAssets, aspect_ratio: str) -> str:
     return (
         "Create a JSON video-ad script for this brand. "
-        "Every scene must include a concrete non-null visual_prompt string.\n\n"
+        "Classify the business_category niche, and include a concrete non-null "
+        "visual_prompt string for every scene.\n\n"
         f"Brand name/title: {assets.site_title}\n"
         f"Brand description: {assets.description}\n"
         f"Primary color: {assets.primary_color}\n"
         f"Raw site snippet: {(assets.raw_text_snippet or '')[:400]}\n"
-        f"Example product images: {assets.product_images[:3]}\n"
         f"Aspect ratio: {aspect_ratio}\n"
     )

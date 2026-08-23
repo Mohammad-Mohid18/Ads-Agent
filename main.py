@@ -94,8 +94,9 @@ async def _run_full_pipeline(ad_id: str, payload: GenerateRequest):
         project.script = script
         storage.save_project(project)
 
-        # 4. ElevenLabs TTS -> public Supabase audio URL
+        # 4. ElevenLabs TTS -> measure durations -> sync scene start/end -> public audio URL
         voice = await synthesize_voice_for_script(script, project_id=ad_id)
+        project.script = script  # persist voice-synced timeline
         project.voice = voice
         storage.save_project(project)
 

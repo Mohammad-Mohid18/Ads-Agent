@@ -111,7 +111,8 @@ async def generate_fal_fallback_image(prompt: str, aspect_ratio: str = "16:9") -
         return STATIC_FALLBACK_IMAGE
 
     os.environ["FAL_KEY"] = fal_key
-    image_size = "landscape_16_9" if aspect_ratio == "16:9" else "portrait_9_16"
+    # fal-ai/flux/schnell supports landscape_16_9 and portrait_16_9 (9:16 vertical video)
+    image_size = "portrait_16_9" if aspect_ratio in {"9:16", "portrait"} else "landscape_16_9"
     safe_prompt = (
         prompt
         or "Professional clean modern business showcase, high resolution, cinematic lighting"
