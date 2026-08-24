@@ -12,10 +12,10 @@ import httpx
 
 from models import BrandAssets, EditRequest, Script, Storage, VideoProject, VoiceResult
 from services.asset_storage import download_url_bytes, upload_bytes
+from services.visuals import generate_scene_visuals
 from services.visual_sanitizer import (
     clean_asset_url,
     sanitize_audio_url,
-    sanitize_image_list,
 )
 
 logger = logging.getLogger("ai_ad_engine.video")
@@ -23,7 +23,7 @@ logger = logging.getLogger("ai_ad_engine.video")
 VIDEO_API_KEY = os.getenv("CREATOMATE_API_KEY")
 VIDEO_API_URL = os.getenv("CREATOMATE_URL", "https://api.creatomate.com/v1/renders").rstrip("/")
 CREATOMATE_TEMPLATE_ID = (os.getenv("CREATOMATE_TEMPLATE_ID") or "").strip()
-# template | renderscript  — RenderScript is used for multi-scene image+VO ads.
+# template | renderscript — RenderScript is used for multi-scene image+VO ads.
 CREATOMATE_RENDER_MODE = (os.getenv("CREATOMATE_RENDER_MODE") or "renderscript").strip().lower()
 RENDER_DIR = Path(__file__).resolve().parent.parent / "data" / "session_renders"
 POLL_INTERVAL_SEC = float(os.getenv("CREATOMATE_POLL_INTERVAL", "2.5"))
@@ -34,7 +34,6 @@ def _normalize_renders_url(url: str) -> str:
     """Force the official Creatomate v1 renders endpoint."""
     if not url:
         return "https://api.creatomate.com/v1/renders"
-    # Common misconfigs: /v2/renders, /execute, trailing paths
     if "creatomate.com" in url:
         return "https://api.creatomate.com/v1/renders"
     return url
@@ -63,18 +62,20 @@ async def build_and_render_video(
     voice: VoiceResult,
 ) -> str:
     """Submit a Creatomate render, wait for completion, upload MP4 to Supabase."""
-    raw_images = _collect_image_urls(script, assets)
-    prompts = [scene.visual_prompt for scene in script.scenes]
-    image_urls = await sanitize_image_list(
-        raw_images,
-        prompts,
-        aspect_ratio=project.aspect_ratio or "16:9",
-        category=script.business_category,
-    )
-    # Persist sanitized public URLs back onto the script for status/debug.
-    for scene, url in zip(script.scenes, image_urls):
-        scene.image_url = url
+    
+    # 1. Reset scene image state to guarantee fresh fal.ai visual generation for every run
+    for scene in script.scenes:
+        scene.image_url = None
 
+    # 2. Directly call generate_scene_visuals to create fresh, business-tailored fal.ai images
+    image_urls = await generate_scene_visuals(
+        script=script,
+        assets=assets,
+        project_id=project.id,
+        aspect_ratio=project.aspect_ratio or "16:9",
+    )
+
+    # 3. Sanitize voiceover audio URL
     raw_voice = voice.full_audio_url or (voice.segments[0].audio_url if voice.segments else None)
     voice_url = await sanitize_audio_url(raw_voice)
     voice.full_audio_url = voice_url
@@ -121,7 +122,7 @@ async def build_and_render_video(
         if not remote_url:
             raise RuntimeError(f"Creatomate render succeeded without url: {final}")
 
-    # Download finished MP4 and store in Supabase (streamed via GET /media/renders/...).
+    # Download finished MP4 and store in Supabase
     video_bytes = await download_url_bytes(remote_url)
     object_path = f"renders/{project.id}_v{project.version}.mp4"
     stored_url = await upload_bytes(object_path, video_bytes, "video/mp4")
@@ -137,27 +138,11 @@ async def build_and_render_video(
     return preview
 
 
-def _collect_image_urls(script: Script, assets: BrandAssets) -> list[str]:
-    urls: list[str] = []
-    for idx, scene in enumerate(script.scenes):
-        url = scene.image_url
-        if not url:
-            if assets.product_images:
-                url = assets.product_images[idx % len(assets.product_images)]
-            else:
-                url = assets.logo_url
-        if not url:
-            raise RuntimeError(f"No image URL available for scene {idx + 1}")
-        urls.append(url)
-    return urls
-
-
 def _build_template_payload(script: Script, image_urls: list[str], voice_url: str) -> dict[str, Any]:
     """Creatomate template_id + modifications schema for multi-scene rendering."""
     modifications: dict[str, str] = {
         "Voiceover": voice_url,
     }
-    # Map scene text/images onto Text-N / Image-N layers when present in the template.
     for idx, scene in enumerate(script.scenes):
         n = idx + 1
         modifications[f"Text-{n}"] = scene.text
@@ -181,20 +166,12 @@ def _build_template_payload(script: Script, image_urls: list[str], voice_url: st
 
 
 def _get_ken_burns_animation(idx: int, duration: float) -> list[dict[str, Any]]:
-    """
-    Generate alternating Ken Burns zoom and pan motion effects per scene
-    to turn static images into dynamic cinematic footage.
-    """
+    """Generate alternating Ken Burns motion effects per scene."""
     motion_presets = [
-        # Scene 1 (Hook): Smooth Zoom In from center
         {"start_scale": "100%", "end_scale": "116%", "x_anchor": "50%", "y_anchor": "50%"},
-        # Scene 2 (Problem): Slow Zoom Out with slight pan right
         {"start_scale": "118%", "end_scale": "103%", "x_anchor": "40%", "y_anchor": "50%"},
-        # Scene 3 (Solution): Dynamic Zoom In with focal point
         {"start_scale": "104%", "end_scale": "118%", "x_anchor": "60%", "y_anchor": "45%"},
-        # Scene 4 (Benefit): Smooth Zoom Out
         {"start_scale": "116%", "end_scale": "102%", "x_anchor": "50%", "y_anchor": "55%"},
-        # Scene 5 (CTA): Cinematic Slow Push In
         {"start_scale": "100%", "end_scale": "115%", "x_anchor": "50%", "y_anchor": "50%"},
     ]
     preset = motion_presets[idx % len(motion_presets)]
@@ -215,9 +192,7 @@ def _get_ken_burns_animation(idx: int, duration: float) -> list[dict[str, Any]]:
 
 
 def _get_scene_transition(idx: int, duration: float) -> list[dict[str, Any]]:
-    """
-    Generate dynamic transitions between scene compositions (fade, slide left, slide right, wipe).
-    """
+    """Generate dynamic transitions between scene compositions."""
     if idx == 0:
         return [
             {
@@ -254,10 +229,7 @@ def _build_renderscript_payload(
     image_urls: list[str],
     voice_url: str,
 ) -> dict[str, Any]:
-    """
-    Build high-converting Creatomate RenderScript with Ken Burns motion,
-    dynamic scene transitions, animated text entrance, and high-contrast styling.
-    """
+    """Build high-converting Creatomate RenderScript."""
     is_portrait = project.aspect_ratio in {"9:16", "portrait"}
     width, height = (1080, 1920) if is_portrait else (1920, 1080)
     
@@ -277,13 +249,9 @@ def _build_renderscript_payload(
         duration = max(float(scene.end - scene.start), 1.5)
         image_url = image_urls[idx] if idx < len(image_urls) else image_urls[-1]
         
-        # Ken Burns Motion on Image
         image_animations = _get_ken_burns_animation(idx, duration)
-        
-        # Scene transition on composition
         scene_transitions = _get_scene_transition(idx, duration)
 
-        # Subtitle layout & styling
         text_font_size = "4.8 vmin" if is_portrait else "4.2 vmin"
         text_y = "82%" if is_portrait else "80%"
         text_width = "86%" if is_portrait else "82%"
@@ -349,7 +317,6 @@ def _build_renderscript_payload(
         )
         cursor += duration
 
-    # Expand composition length to voiceover total
     total_duration = max(cursor, float(script.duration or 0.0), 1.0)
     source = {
         "output_format": "mp4",
@@ -360,7 +327,6 @@ def _build_renderscript_payload(
         "elements": elements,
     }
     return {"source": source}
-
 
 
 async def _poll_render(
@@ -391,32 +357,31 @@ async def edit_ad_component(project: VideoProject, req: EditRequest, storage: St
     target = req.target_layer.strip()
     new_value = req.new_value.strip()
 
-    # Normalize target strings (e.g. "Image-4", "image_4", "scene_4_image", "scene_4_prompt")
+    # Flexible matching for image layers (e.g. Image-4, scene_4_image, image_4, scene_4_prompt)
     image_layer_match = re.search(r"(?:image[_-]?|scene[_-]?(\d+)[_-]?(?:image|prompt)?|(\d+))", target, re.IGNORECASE)
     
-    # Extract scene index if target matches image pattern
     scene_idx = None
     if image_layer_match:
         digits = [g for g in image_layer_match.groups() if g and g.isdigit()]
         if digits:
             scene_idx = int(digits[0]) - 1
 
-    # 1. Handle Image Edits (e.g., Image-4, scene_4_image, image_4, scene_4_prompt)
+    # 1. Image Edits
     if scene_idx is not None and project.script and 0 <= scene_idx < len(project.script.scenes):
         scene = project.script.scenes[scene_idx]
 
-        # If new_value is an HTTP/HTTPS URL, assign it directly
         if new_value.startswith("http://") or new_value.startswith("https://"):
             scene.image_url = new_value
             logger.info("Updated Scene %d image URL directly -> %s", scene_idx + 1, new_value)
-        # Otherwise, treat new_value as a prompt and generate a new visual via fal.ai
         else:
             logger.info("Triggering fal.ai re-generation for Scene %d prompt: %s", scene_idx + 1, new_value)
             scene.visual_prompt = new_value
             from services.visual_sanitizer import generate_fal_fallback_image
             new_image_url = await generate_fal_fallback_image(
                 prompt=new_value,
-                aspect_ratio=project.aspect_ratio or "16:9"
+                aspect_ratio=project.aspect_ratio or "16:9",
+                scene_idx=scene_idx,
+                category=project.script.business_category
             )
             scene.image_url = new_image_url
 
@@ -424,7 +389,7 @@ async def edit_ad_component(project: VideoProject, req: EditRequest, storage: St
         storage.save_project(project)
         return await _trigger_render_sim(project)
 
-    # 2. Handle Script Line Edits (e.g., script_line_1, Text-1, text_1)
+    # 2. Script Line Edits
     text_match = re.search(r"(?:script_line_|text[_-]?)(\d+)", target, re.IGNORECASE)
     if text_match and project.script:
         idx = int(text_match.group(1)) - 1
@@ -434,7 +399,7 @@ async def edit_ad_component(project: VideoProject, req: EditRequest, storage: St
             storage.save_project(project)
             return await _trigger_render_sim(project)
 
-    # 3. Handle Brand Color Edits
+    # 3. Brand Color Edits
     if target.lower() in {"brand_color", "primary_color", "color"}:
         if project.brand_assets:
             project.brand_assets.primary_color = new_value
@@ -442,13 +407,12 @@ async def edit_ad_component(project: VideoProject, req: EditRequest, storage: St
         storage.save_project(project)
         return await _trigger_render_sim(project)
 
-    # 4. Handle Voiceover Edits
+    # 4. Voiceover Edits
     if target.lower().startswith("voiceover"):
         project.version += 1
         storage.save_project(project)
         return await _trigger_render_sim(project)
 
-    # If layer doesn't match any supported target format, return clean exception
     raise ValueError(
         f"Unknown target_layer: '{target}'. Supported layer formats include: "
         "'Image-4', 'scene_4_image', 'scene_4_prompt', 'Text-1', 'script_line_1', 'brand_color', or 'voiceover'."

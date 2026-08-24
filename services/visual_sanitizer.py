@@ -168,50 +168,100 @@ def _content_type_ok(content_type: Optional[str], allowed: tuple[str, ...]) -> b
     ct = (content_type or "").lower()
     return any(vt in ct for vt in allowed)
 
+from urllib.parse import quote
 
+async def fetch_pexels_fallback_image(
+    prompt: str,
+    scene_idx: int = 0,
+    category: Optional[str] = None,
+    aspect_ratio: str = "16:9",
+) -> Optional[str]:
+    """Fetch a high-res stock photo from Pexels using scene-specific script keywords."""
+    pexels_key = (os.getenv("PEXELS_API_KEY") or "").strip()
+    if not pexels_key:
+        logger.warning("PEXELS_API_KEY not set in .env")
+        return None
+
+    # Construct search query directly from scene visual prompt and category
+    search_query = (prompt or category or "commercial product").strip()
+    
+    orientation = "portrait" if aspect_ratio in {"9:16", "portrait"} else "landscape"
+    url = f"https://api.pexels.com/v1/search?query={quote(search_query)}&orientation={orientation}&per_page=15"
+    
+    headers = {"Authorization": pexels_key}
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            res = await client.get(url, headers=headers)
+            if res.status_code == 200:
+                data = res.json()
+                photos = data.get("photos", [])
+                if photos:
+                    # Pick unique photo matching scene index
+                    photo = photos[scene_idx % len(photos)]
+                    selected_url = photo["src"]["large2x"]
+                    logger.info("Pexels fetched image for query '%s' (Scene %d): %s", search_query, scene_idx + 1, selected_url[:80])
+                    return selected_url
+            else:
+                logger.warning("Pexels API returned status %d for query '%s'", res.status_code, search_query)
+    except Exception as exc:
+        logger.warning("Pexels search failed for query '%s': %s", search_query, exc)
+
+    return None
+
+
+# 2. UPDATED FAL.AI GENERATION WITH PEXELS FALLBACK
 async def generate_fal_fallback_image(
     prompt: str,
     aspect_ratio: str = "16:9",
     scene_idx: int = 0,
     category: Optional[str] = None,
 ) -> str:
-    """Generate a dedicated visual via fal.ai FLUX, or return a unique niche-matched visual."""
-    logger.info("Generating visual with fal.ai (scene %s) for prompt: %s", scene_idx + 1, (prompt or "")[:120])
+    """Generate visual via fal.ai; fall back to Pexels API, then Unsplash niche pools."""
+    logger.info("Generating visual (scene %s) for prompt: %s", scene_idx + 1, (prompt or "")[:100])
+    
     fal_key = (os.getenv("FAL_KEY") or os.getenv("FAL_API_KEY") or "").strip()
-    if not fal_key:
-        logger.warning("FAL_KEY not set — using unique niche visual for scene %s", scene_idx + 1)
-        return get_niche_fallback_image(category, scene_idx)
+    
+    # If FAL_KEY is missing or balance exhausted, try Pexels first
+    if fal_enabled := bool(fal_key):
+        os.environ["FAL_KEY"] = fal_key
+        image_size = "portrait_16_9" if aspect_ratio in {"9:16", "portrait"} else "landscape_16_9"
+        safe_prompt = prompt or "Professional clean modern business showcase, cinematic lighting, 8k"
 
-    os.environ["FAL_KEY"] = fal_key
-    image_size = "portrait_16_9" if aspect_ratio in {"9:16", "portrait"} else "landscape_16_9"
-    safe_prompt = (
-        prompt
-        or "Professional clean modern business showcase, cinematic lighting, 8k resolution, photorealistic"
+        def _run() -> str:
+            import fal_client
+            result = fal_client.subscribe(
+                FAL_MODEL,
+                arguments={
+                    "prompt": safe_prompt,
+                    "image_size": image_size,
+                    "num_images": 1,
+                    "enable_safety_checker": True,
+                },
+                with_logs=False,
+            )
+            images = result.get("images") or []
+            if not images or not images[0].get("url"):
+                raise RuntimeError("fal.ai returned no image URL")
+            return images[0]["url"]
+
+        try:
+            return await asyncio.to_thread(_run)
+        except Exception as exc:
+            logger.warning("fal.ai generation failed for scene %s (%s). Attempting Pexels fallback...", scene_idx + 1, exc)
+
+    # Fallback 1: Query Pexels API
+    pexels_url = await fetch_pexels_fallback_image(
+        prompt=prompt,
+        scene_idx=scene_idx,
+        category=category,
+        aspect_ratio=aspect_ratio,
     )
+    if pexels_url:
+        return pexels_url
 
-    def _run() -> str:
-        import fal_client
-
-        result = fal_client.subscribe(
-            FAL_MODEL,
-            arguments={
-                "prompt": safe_prompt,
-                "image_size": image_size,
-                "num_images": 1,
-                "enable_safety_checker": True,
-            },
-            with_logs=False,
-        )
-        images = result.get("images") or []
-        if not images or not images[0].get("url"):
-            raise RuntimeError("fal.ai returned no image URL")
-        return images[0]["url"]
-
-    try:
-        return await asyncio.to_thread(_run)
-    except Exception as exc:
-        logger.error("fal.ai generation failed for scene %s: %s", scene_idx + 1, exc)
-        return get_niche_fallback_image(category, scene_idx)
+    # Fallback 2: Local Unsplash niche fallback pools
+    logger.warning("Pexels fallback unavailable. Falling back to local niche pool for scene %s", scene_idx + 1)
+    return get_niche_fallback_image(category, scene_idx)
 
 
 async def sanitize_scene_visual(

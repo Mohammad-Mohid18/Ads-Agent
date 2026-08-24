@@ -13,7 +13,6 @@ from services.visual_sanitizer import (
     clean_asset_url,
     generate_fal_fallback_image,
     get_niche_fallback_image,
-    sanitize_scene_visual,
 )
 
 logger = logging.getLogger("ai_ad_engine.visuals")
@@ -47,7 +46,7 @@ async def generate_scene_visuals(
 ) -> List[str]:
     """
     Generate all scene visuals directly via dedicated fal.ai FLUX calls for every scene (min 5).
-    Guarantees strict scene-index mapping and prevents image reuse.
+    Guarantees strict scene-index mapping, fresh generation per run, and prevents image reuse.
     """
     category = (script.business_category or "").strip() or infer_business_category(assets)
     script.business_category = category
@@ -68,13 +67,14 @@ async def generate_scene_visuals(
 
         fal_prompt = build_fal_prompt(category, prompt, assets)
         logger.info(
-            "Generating dedicated visual for scene %s/%s (%s) category=%s",
+            "Generating fresh visual via fal.ai for scene %s/%s (%s) category=%s",
             idx + 1,
             len(script.scenes),
             scene.role,
             category,
         )
 
+        # Force fresh generation via fal.ai for every new pipeline run
         candidate: Optional[str] = None
         try:
             candidate = await generate_fal_fallback_image(
@@ -86,20 +86,15 @@ async def generate_scene_visuals(
         except Exception as exc:
             logger.warning("fal.ai generation raised for scene %s: %s", idx + 1, exc)
 
-        # Validate / heal candidate image URL
-        safe_url = await sanitize_scene_visual(
-            candidate,
-            fal_prompt,
-            aspect_ratio=aspect_ratio,
-            scene_idx=idx,
-            category=category,
-        )
+        safe_url = clean_asset_url(candidate) if candidate else None
+        if not safe_url:
+            safe_url = get_niche_fallback_image(category, idx)
 
         # Enforce anti-duplication: never reuse the same URL for multiple scenes
         if safe_url in seen_urls:
             safe_url = get_niche_fallback_image(category, idx)
 
-        # Cache to Supabase with unique scene-specific path
+        # Cache freshly generated image to Supabase with unique scene-specific path
         if cache_to_supabase and safe_url.startswith("http") and "supabase.co" not in safe_url:
             try:
                 data = await download_url_bytes(safe_url)
@@ -119,9 +114,10 @@ async def generate_scene_visuals(
         safe_url = clean_asset_url(safe_url) or get_niche_fallback_image(category, idx)
         seen_urls.add(safe_url)
         urls.append(safe_url)
+        
+        # Save fresh asset state onto scene
         scene.visual_prompt = prompt
         scene.image_url = safe_url
         logger.info("Scene %s image ready (slot Image-%s): %s", idx + 1, idx + 1, safe_url[:120])
 
     return urls
-
