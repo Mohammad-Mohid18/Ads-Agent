@@ -69,6 +69,7 @@ async def build_and_render_video(
         raw_images,
         prompts,
         aspect_ratio=project.aspect_ratio or "16:9",
+        category=script.business_category,
     )
     # Persist sanitized public URLs back onto the script for status/debug.
     for scene, url in zip(script.scenes, image_urls):
@@ -152,7 +153,7 @@ def _collect_image_urls(script: Script, assets: BrandAssets) -> list[str]:
 
 
 def _build_template_payload(script: Script, image_urls: list[str], voice_url: str) -> dict[str, Any]:
-    """Creatomate template_id + modifications schema."""
+    """Creatomate template_id + modifications schema for multi-scene rendering."""
     modifications: dict[str, str] = {
         "Voiceover": voice_url,
     }
@@ -160,11 +161,13 @@ def _build_template_payload(script: Script, image_urls: list[str], voice_url: st
     for idx, scene in enumerate(script.scenes):
         n = idx + 1
         modifications[f"Text-{n}"] = scene.text
-        # Clean unobtrusive typography scaled to ~40-48px range.
         modifications[f"Text-{n}.font_size"] = "44 px"
+        modifications[f"Text-{n}.font_weight"] = "700"
+        modifications[f"Text-{n}.shadow_color"] = "rgba(0,0,0,0.85)"
+        modifications[f"Text-{n}.shadow_blur"] = "14 px"
         if idx < len(image_urls):
             modifications[f"Image-{n}"] = image_urls[idx]
-    # Always fill Text-1 with the hook / concatenated headline for templates that only have Text-1/2.
+
     if script.scenes:
         modifications["Text-1"] = script.scenes[0].text
         modifications["Text-1.font_size"] = "44 px"
@@ -177,6 +180,74 @@ def _build_template_payload(script: Script, image_urls: list[str], voice_url: st
     }
 
 
+def _get_ken_burns_animation(idx: int, duration: float) -> list[dict[str, Any]]:
+    """
+    Generate alternating Ken Burns zoom and pan motion effects per scene
+    to turn static images into dynamic cinematic footage.
+    """
+    motion_presets = [
+        # Scene 1 (Hook): Smooth Zoom In from center
+        {"start_scale": "100%", "end_scale": "116%", "x_anchor": "50%", "y_anchor": "50%"},
+        # Scene 2 (Problem): Slow Zoom Out with slight pan right
+        {"start_scale": "118%", "end_scale": "103%", "x_anchor": "40%", "y_anchor": "50%"},
+        # Scene 3 (Solution): Dynamic Zoom In with focal point
+        {"start_scale": "104%", "end_scale": "118%", "x_anchor": "60%", "y_anchor": "45%"},
+        # Scene 4 (Benefit): Smooth Zoom Out
+        {"start_scale": "116%", "end_scale": "102%", "x_anchor": "50%", "y_anchor": "55%"},
+        # Scene 5 (CTA): Cinematic Slow Push In
+        {"start_scale": "100%", "end_scale": "115%", "x_anchor": "50%", "y_anchor": "50%"},
+    ]
+    preset = motion_presets[idx % len(motion_presets)]
+    return [
+        {
+            "time": 0,
+            "duration": duration,
+            "easing": "linear",
+            "type": "scale",
+            "scope": "element",
+            "start_scale": preset["start_scale"],
+            "end_scale": preset["end_scale"],
+            "x_anchor": preset["x_anchor"],
+            "y_anchor": preset["y_anchor"],
+            "fade": False,
+        }
+    ]
+
+
+def _get_scene_transition(idx: int, duration: float) -> list[dict[str, Any]]:
+    """
+    Generate dynamic transitions between scene compositions (fade, slide left, slide right, wipe).
+    """
+    if idx == 0:
+        return [
+            {
+                "time": 0,
+                "duration": min(0.4, duration * 0.15),
+                "transition": True,
+                "type": "fade",
+            }
+        ]
+    
+    transition_patterns = [
+        {"type": "slide", "direction": "left", "easing": "quadratic-out"},
+        {"type": "fade", "easing": "linear"},
+        {"type": "slide", "direction": "right", "easing": "quadratic-out"},
+        {"type": "slide", "direction": "left", "easing": "quadratic-out"},
+    ]
+    pattern = transition_patterns[(idx - 1) % len(transition_patterns)]
+    trans_obj: dict[str, Any] = {
+        "time": 0,
+        "duration": min(0.45, duration * 0.18),
+        "transition": True,
+        "type": pattern["type"],
+    }
+    if "direction" in pattern:
+        trans_obj["direction"] = pattern["direction"]
+    if "easing" in pattern:
+        trans_obj["easing"] = pattern["easing"]
+    return [trans_obj]
+
+
 def _build_renderscript_payload(
     project: VideoProject,
     script: Script,
@@ -184,10 +255,12 @@ def _build_renderscript_payload(
     voice_url: str,
 ) -> dict[str, Any]:
     """
-    Custom RenderScript with multi-scene durations, images, text, and voiceover.
-    This avoids single-frame static output from empty/invalid template payloads.
+    Build high-converting Creatomate RenderScript with Ken Burns motion,
+    dynamic scene transitions, animated text entrance, and high-contrast styling.
     """
-    width, height = (1080, 1920) if project.aspect_ratio == "9:16" else (1920, 1080)
+    is_portrait = project.aspect_ratio in {"9:16", "portrait"}
+    width, height = (1080, 1920) if is_portrait else (1920, 1080)
+    
     elements: list[dict[str, Any]] = [
         {
             "name": "Voiceover",
@@ -200,10 +273,21 @@ def _build_renderscript_payload(
     ]
 
     cursor = 0.0
-    # Prefer voice-synced timeline (scene.start/end rewritten after TTS measurement).
     for idx, scene in enumerate(script.scenes):
-        duration = max(float(scene.end - scene.start), 1.2)
-        image_url = image_urls[idx]
+        duration = max(float(scene.end - scene.start), 1.5)
+        image_url = image_urls[idx] if idx < len(image_urls) else image_urls[-1]
+        
+        # Ken Burns Motion on Image
+        image_animations = _get_ken_burns_animation(idx, duration)
+        
+        # Scene transition on composition
+        scene_transitions = _get_scene_transition(idx, duration)
+
+        # Subtitle layout & styling
+        text_font_size = "4.8 vmin" if is_portrait else "4.2 vmin"
+        text_y = "82%" if is_portrait else "80%"
+        text_width = "86%" if is_portrait else "82%"
+        
         elements.append(
             {
                 "name": f"Scene-{idx + 1}",
@@ -222,63 +306,50 @@ def _build_renderscript_payload(
                         "width": "100%",
                         "height": "100%",
                         "fit": "cover",
-                        "animations": [
-                            {
-                                "time": 0,
-                                "duration": duration,
-                                "easing": "linear",
-                                "type": "scale",
-                                "scope": "element",
-                                "start_scale": "100%",
-                                "end_scale": "112%",
-                                "fade": False,
-                            }
-                        ],
+                        "animations": image_animations,
                     },
                     {
                         "name": f"Text-{idx + 1}",
                         "type": "text",
                         "track": 2,
                         "text": scene.text,
-                        "width": "82%",
-                        "height": "24%",
+                        "width": text_width,
+                        "height": "22%",
                         "x": "50%",
-                        "y": "80%",
+                        "y": text_y,
                         "x_alignment": "50%",
                         "y_alignment": "50%",
                         "fill_color": "#FFFFFF",
                         "font_family": "Montserrat",
-                        "font_weight": "700",
-                        # Scaled down to ~45px (4.2 vmin at 1080p) for clean unobtrusive subtitles.
-                        "font_size": "4.2 vmin",
-                        "background_color": "rgba(0,0,0,0.40)",
-                        "background_x_padding": "4%",
-                        "background_y_padding": "3%",
+                        "font_weight": "800",
+                        "font_size": text_font_size,
+                        "line_height": "125%",
+                        "background_color": "rgba(10, 15, 30, 0.68)",
+                        "background_border_radius": "15%",
+                        "background_x_padding": "5%",
+                        "background_y_padding": "3.5%",
+                        "shadow_color": "rgba(0, 0, 0, 0.85)",
+                        "shadow_blur": "2vmin",
+                        "shadow_y": "1vmin",
                         "animations": [
                             {
-                                "time": 0,
-                                "duration": min(0.4, duration * 0.2),
+                                "time": 0.1,
+                                "duration": min(0.45, duration * 0.22),
                                 "easing": "quadratic-out",
                                 "type": "text-slide",
                                 "direction": "up",
                                 "split": "line",
+                                "scope": "split-clip",
                             }
                         ],
                     },
                 ],
-                "animations": [
-                    {
-                        "time": 0,
-                        "duration": min(0.3, duration * 0.15),
-                        "transition": True,
-                        "type": "fade",
-                    }
-                ],
+                "animations": scene_transitions,
             }
         )
         cursor += duration
 
-    # Expand composition length to the voice-synced total (may exceed 15s).
+    # Expand composition length to voiceover total
     total_duration = max(cursor, float(script.duration or 0.0), 1.0)
     source = {
         "output_format": "mp4",
@@ -289,6 +360,7 @@ def _build_renderscript_payload(
         "elements": elements,
     }
     return {"source": source}
+
 
 
 async def _poll_render(
