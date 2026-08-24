@@ -138,32 +138,42 @@ async def build_and_render_video(
     return preview
 
 
-def _build_template_payload(script: Script, image_urls: list[str], voice_url: str) -> dict[str, Any]:
-    """Creatomate template_id + modifications schema for multi-scene rendering."""
-    modifications: dict[str, str] = {
-        "Voiceover": voice_url,
-    }
-    for idx, scene in enumerate(script.scenes):
-        n = idx + 1
-        modifications[f"Text-{n}"] = scene.text
-        modifications[f"Text-{n}.font_size"] = "44 px"
-        modifications[f"Text-{n}.font_weight"] = "700"
-        modifications[f"Text-{n}.shadow_color"] = "rgba(0,0,0,0.85)"
-        modifications[f"Text-{n}.shadow_blur"] = "14 px"
-        if idx < len(image_urls):
-            modifications[f"Image-{n}"] = image_urls[idx]
+def _build_template_payload(
+    script: Script, 
+    image_urls: list[str], 
+    voice_url: str,
+    assets: BrandAssets = None
+) -> dict[str, Any]:
+    """
+    Creatomate template payload mapped precisely to the 'Quick Promo' template layers.
+    """
+    # 1. Combine generated script scenes into template's two main text layers
+    text_1_content = script.scenes[0].text if script.scenes else "Discover Innovation"
+    
+    # Combine middle scenes for Text-2
+    if len(script.scenes) > 1:
+        middle_texts = [s.text for s in script.scenes[1:]]
+        text_2_content = " ".join(middle_texts)
+    else:
+        text_2_content = text_1_content
 
-    if script.scenes:
-        modifications["Text-1"] = script.scenes[0].text
-        modifications["Text-1.font_size"] = "44 px"
-        if len(script.scenes) > 1:
-            modifications["Text-2"] = script.scenes[-1].text
-            modifications["Text-2.font_size"] = "40 px"
+    # 2. Map payload keys directly to layer names shown in Creatomate sidebar
+    modifications: dict[str, Any] = {
+        # Audio track
+        "Audio": voice_url,
+        
+        # Background Visual (Uses Video layer key shown in template editor)
+        "Video": image_urls[0] if image_urls else "https://creatomate.com/files/assets/7347c3b7-e1a8-4439-96f1-f3dfc95c3d28",
+        
+        # Text Overlays
+        "Text-1": text_1_content,
+        "Text-2": text_2_content,
+    }
+
     return {
         "template_id": CREATOMATE_TEMPLATE_ID,
         "modifications": modifications,
     }
-
 
 def _get_ken_burns_animation(idx: int, duration: float) -> list[dict[str, Any]]:
     """Generate alternating Ken Burns motion effects per scene."""
