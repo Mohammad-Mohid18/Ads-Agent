@@ -387,43 +387,72 @@ async def _poll_render(
 
 
 async def edit_ad_component(project: VideoProject, req: EditRequest, storage: Storage) -> str:
-    """Perform targeted edits and re-render."""
-    target = req.target_layer
-    new_value = req.new_value
+    """Perform targeted edits and re-render with flexible layer name mapping."""
+    target = req.target_layer.strip()
+    new_value = req.new_value.strip()
 
-    if target.startswith("script_line_"):
-        idx = int(target.split("_")[-1]) - 1
-        project.script.scenes[idx].text = new_value
+    # Normalize target strings (e.g. "Image-4", "image_4", "scene_4_image", "scene_4_prompt")
+    image_layer_match = re.search(r"(?:image[_-]?|scene[_-]?(\d+)[_-]?(?:image|prompt)?|(\d+))", target, re.IGNORECASE)
+    
+    # Extract scene index if target matches image pattern
+    scene_idx = None
+    if image_layer_match:
+        digits = [g for g in image_layer_match.groups() if g and g.isdigit()]
+        if digits:
+            scene_idx = int(digits[0]) - 1
+
+    # 1. Handle Image Edits (e.g., Image-4, scene_4_image, image_4, scene_4_prompt)
+    if scene_idx is not None and project.script and 0 <= scene_idx < len(project.script.scenes):
+        scene = project.script.scenes[scene_idx]
+
+        # If new_value is an HTTP/HTTPS URL, assign it directly
+        if new_value.startswith("http://") or new_value.startswith("https://"):
+            scene.image_url = new_value
+            logger.info("Updated Scene %d image URL directly -> %s", scene_idx + 1, new_value)
+        # Otherwise, treat new_value as a prompt and generate a new visual via fal.ai
+        else:
+            logger.info("Triggering fal.ai re-generation for Scene %d prompt: %s", scene_idx + 1, new_value)
+            scene.visual_prompt = new_value
+            from services.visual_sanitizer import generate_fal_fallback_image
+            new_image_url = await generate_fal_fallback_image(
+                prompt=new_value,
+                aspect_ratio=project.aspect_ratio or "16:9"
+            )
+            scene.image_url = new_image_url
+
         project.version += 1
         storage.save_project(project)
         return await _trigger_render_sim(project)
 
-    if target.startswith("scene_") and target.endswith("_image"):
-        parts = target.split("_")
-        idx = int(parts[1]) - 1
-        key = f"scene_{idx + 1}_image"
-        if not project.layers:
-            project.layers = {}
-        project.layers[key] = {"type": "image", "source": new_value}
-        if project.script and 0 <= idx < len(project.script.scenes):
-            project.script.scenes[idx].image_url = new_value
-        project.version += 1
-        storage.save_project(project)
-        return await _trigger_render_sim(project)
+    # 2. Handle Script Line Edits (e.g., script_line_1, Text-1, text_1)
+    text_match = re.search(r"(?:script_line_|text[_-]?)(\d+)", target, re.IGNORECASE)
+    if text_match and project.script:
+        idx = int(text_match.group(1)) - 1
+        if 0 <= idx < len(project.script.scenes):
+            project.script.scenes[idx].text = new_value
+            project.version += 1
+            storage.save_project(project)
+            return await _trigger_render_sim(project)
 
-    if target == "brand_color":
+    # 3. Handle Brand Color Edits
+    if target.lower() in {"brand_color", "primary_color", "color"}:
         if project.brand_assets:
             project.brand_assets.primary_color = new_value
         project.version += 1
         storage.save_project(project)
         return await _trigger_render_sim(project)
 
-    if target.startswith("voiceover_"):
+    # 4. Handle Voiceover Edits
+    if target.lower().startswith("voiceover"):
         project.version += 1
         storage.save_project(project)
         return await _trigger_render_sim(project)
 
-    raise ValueError("Unknown target_layer")
+    # If layer doesn't match any supported target format, return clean exception
+    raise ValueError(
+        f"Unknown target_layer: '{target}'. Supported layer formats include: "
+        "'Image-4', 'scene_4_image', 'scene_4_prompt', 'Text-1', 'script_line_1', 'brand_color', or 'voiceover'."
+    )
 
 
 async def _trigger_render_sim(project: VideoProject) -> str:
