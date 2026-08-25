@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Ad Foundry — Website to Video Ad Batch</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --bg: #F8F7F4;
+      --card-bg: #FFFFFF;
+      --text: #18191B;
+      --muted: #6B7280;
+      --accent: #0F5338;
+      --accent-hover: #0B3F2A;
+      --border: #E5E7EB;
+      --radius: 16px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 32px 24px;
+      min-height: 100vh;
+    }
+
+    .container { max-width: 1100px; margin: 0 auto; }
+
+    /* Header */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 48px;
+    }
+    .brand { font-weight: 800; font-size: 20px; letter-spacing: -0.5px; }
+    .badge {
+      background: #EAE8E3;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+    }
+
+    /* Hero */
+    .hero-tag {
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 1.5px;
+      color: var(--accent);
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    h1 {
+      font-size: 48px;
+      font-weight: 800;
+      letter-spacing: -1.5px;
+      line-height: 1.1;
+      margin-bottom: 16px;
+      max-width: 650px;
+    }
+    .subtitle {
+      color: var(--muted);
+      font-size: 15px;
+      margin-bottom: 32px;
+      max-width: 580px;
+    }
+
+    /* Input Form */
+    .input-row {
+      display: flex;
+      gap: 12px;
+      background: var(--card-bg);
+      padding: 6px;
+      border-radius: 40px;
+      border: 1px solid var(--border);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.03);
+    }
+    input[type="url"], input[type="text"] {
+      flex: 1;
+      border: none;
+      outline: none;
+      padding: 12px 20px;
+      font-size: 15px;
+      background: transparent;
+      border-radius: 30px;
+    }
+    .btn-submit {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 12px 28px;
+      font-weight: 700;
+      font-size: 14px;
+      border-radius: 30px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn-submit:hover { background: var(--accent-hover); }
+
+    .help-text {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 10px;
+      margin-left: 8px;
+    }
+
+    /* Multi-Video Batch Grid */
+    .editor-section {
+      display: none;
+      margin-top: 48px;
+      background: var(--card-bg);
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      padding: 32px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.04);
+    }
+
+    .video-batch-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 24px;
+      margin-bottom: 36px;
+    }
+
+    .video-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+    }
+
+    .video-card h4 {
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      text-transform: capitalize;
+      color: var(--text);
+    }
+
+    video {
+      width: 100%;
+      border-radius: 8px;
+      background: #000;
+    }
+
+    /* Edit Section */
+    .edit-panel {
+      border-top: 1px solid var(--border);
+      padding-top: 24px;
+    }
+
+    .edit-controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr auto;
+      gap: 16px;
+      align-items: end;
+    }
+
+    select, .edit-input {
+      width: 100%;
+      padding: 10px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+      background: #FAFAFA;
+    }
+
+    .spinner {
+      display: none;
+      margin: 20px auto;
+      text-align: center;
+      font-weight: 600;
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <header>
+      <div class="brand">ad foundry</div>
+      <div class="badge">Prototype</div>
+    </header>
+
+    <main>
+      <div class="hero-tag">WEBSITE TO VIDEO AD BATCH</div>
+      <h1>Turn your business site into 3 polished video ads.</h1>
+      <p class="subtitle">Paste a business website URL. We will extract brand assets, write a script, generate voiceovers, and render 3 unique template variations simultaneously.</p>
+
+      <!-- URL Form -->
+      <form id="adForm" onsubmit="generateAd(event)">
+        <div class="input-row">
+          <input type="url" id="targetUrl" placeholder="https://yourbusiness.com" required />
+          <button type="submit" class="btn-submit" id="submitBtn">Create 3 Ads</button>
+        </div>
+      </form>
+      <p class="help-text">Start with a public business website. All 3 ad styles will generate automatically.</p>
+
+      <div class="spinner" id="loader">Generating 3 video ads... (Scraping, Scripting, Synthesizing Voice & Parallel Rendering)</div>
+
+      <!-- Editor & Batch Section -->
+      <div class="editor-section" id="editorSection">
+        <h3 style="margin-bottom: 20px;">Generated Ad Variations</h3>
+        
+        <!-- 3 Video Players rendered dynamically -->
+        <div class="video-batch-grid" id="videoBatchContainer"></div>
+
+        <!-- Targeted Editing Controls -->
+        <div class="edit-panel">
+          <h4 style="margin-bottom: 6px;">Targeted Editing</h4>
+          <p style="font-size: 12px; color: var(--muted); margin-bottom: 16px;">Swap specific scene images or update script lines across your ad batch.</p>
+
+          <div class="edit-controls">
+            <div>
+              <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 6px;">Target Layer / Scene</label>
+              <select id="targetLayer">
+                <option value="Image-1">Scene 1 Image (Image-1)</option>
+                <option value="Image-2">Scene 2 Image (Image-2)</option>
+                <option value="Image-3">Scene 3 Image (Image-3)</option>
+                <option value="Image-4">Scene 4 Image (Image-4)</option>
+                <option value="script_line_1">Script Line 1 (Text-1)</option>
+                <option value="script_line_2">Script Line 2 (Text-2)</option>
+              </select>
+            </div>
+
+            <div>
+              <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 6px;">New Value / Prompt / Image URL</label>
+              <input type="text" class="edit-input" id="newValue" placeholder="Enter image URL or new prompt text" required />
+            </div>
+
+            <button type="button" class="btn-submit" onclick="applyEdit()">Apply Edit</button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    let currentAdId = null;
+
+    async function generateAd(event) {
+      event.preventDefault();
+      const url = document.getElementById('targetUrl').value;
+      const loader = document.getElementById('loader');
+      const submitBtn = document.getElementById('submitBtn');
+
+      loader.style.display = 'block';
+      submitBtn.disabled = true;
+
+      try {
+        const res = await fetch('/api/v1/ads/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: url })
+        });
+
+        const data = await res.json();
+        
+        if (res.ok) {
+          currentAdId = data.ad_id || data.id || data.project_id;
+          
+          // Poll until backend completes all 3 parallel renders
+          pollAdStatus(currentAdId);
+        } else {
+          alert('Error: ' + (data.detail || 'Failed to initialize ad generation'));
+          loader.style.display = 'none';
+          submitBtn.disabled = false;
+        }
+      } catch (err) {
+        alert('API Connection Failed: ' + err.message);
+        loader.style.display = 'none';
+        submitBtn.disabled = false;
+      }
+    }
+
+    async function pollAdStatus(adId) {
+      const loader = document.getElementById('loader');
+      const submitBtn = document.getElementById('submitBtn');
+
+      const interval = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/v1/ads/${adId}/status`);
+          const project = await res.json();
+
+          if (project.status === 'ready') {
+            clearInterval(interval);
+            loader.style.display = 'none';
+            submitBtn.disabled = false;
+
+            renderVideoBatch(project);
+          } else if (project.status === 'failed') {
+            clearInterval(interval);
+            loader.style.display = 'none';
+            submitBtn.disabled = false;
+            alert('Ad Generation Failed: ' + (project.error || 'Unknown error during rendering'));
+          }
+        } catch (err) {
+          console.error("Polling error:", err);
+        }
+      }, 3000);
+    }
+
+    function renderVideoBatch(project) {
+      const container = document.getElementById('videoBatchContainer');
+      container.innerHTML = '';
+
+      // Fallback map if single URL is present
+      const renders = project.preview_urls || {
+        "Service Business": project.preview_url
+      };
+
+      Object.entries(renders).forEach(([key, rawUrl]) => {
+        if (!rawUrl) return;
+
+        // Resolve local proxy route /media/ to full browser URL
+        const videoUrl = rawUrl.startsWith('/') ? `${window.location.origin}${rawUrl}` : rawUrl;
+        
+        const card = document.createElement('div');
+        card.className = 'video-card';
+        card.innerHTML = `
+          <h4>${key.replace('_', ' ')} Variant</h4>
+          <video controls autoplay loop playsinline>
+            <source src="${videoUrl}" type="video/mp4">
+            Your browser does not support video playback.
+          </video>
+        `;
+        container.appendChild(card);
+      });
+
+      document.getElementById('editorSection').style.display = 'block';
+    }
+
+    async function applyEdit() {
+      if (!currentAdId) return alert('No active ad session');
+      
+      const layer = document.getElementById('targetLayer').value;
+      const val = document.getElementById('newValue').value;
+      const loader = document.getElementById('loader');
+
+      loader.style.display = 'block';
+
+      try {
+        const res = await fetch(`/api/v1/ads/${currentAdId}/edit`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target_layer: layer, new_value: val })
+        });
+
+        const data = await res.json();
+        if (res.ok) {
+          pollAdStatus(currentAdId);
+        } else {
+          alert('Edit Error: ' + JSON.stringify(data.detail));
+          loader.style.display = 'none';
+        }
+      } catch (err) {
+        alert('Edit Request Failed: ' + err.message);
+        loader.style.display = 'none';
+      }
+    }
+  </script>
+</body>
+</html>

@@ -54,25 +54,27 @@ class VoiceResult(BaseModel):
     full_audio_url: Optional[str] = None
 
 
+class GenerateRequest(BaseModel):
+    url: str
+    aspect_ratio: Optional[str] = "16:9"
+    template_id: Optional[str] = None  # Captures front-end template selection
+
 class VideoProject(BaseModel):
     id: str
-    source_url: Optional[str] = None
+    source_url: str
     aspect_ratio: Optional[str] = "16:9"
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: Optional[datetime] = None
-    status: str = "processing"
+    template_id: Optional[str] = None
+    version: int = 1
+    status: str = "pending"
     error: Optional[str] = None
+    preview_url: Optional[str] = None  # Primary featured render
+    preview_urls: Optional[dict[str, str]] = Field(default_factory=dict)  # Maps template_key -> URL
     brand_assets: Optional[BrandAssets] = None
     script: Optional[Script] = None
     voice: Optional[VoiceResult] = None
-    preview_url: Optional[str] = None
-    layers: Optional[Dict[str, Any]] = None
-    version: int = 1
-
-
-class GenerateRequest(BaseModel):
-    url: str
-    aspect_ratio: str = "16:9"
+    layers: Optional[dict[str, Any]] = None
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class GenerateResponse(BaseModel):

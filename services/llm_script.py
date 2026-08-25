@@ -28,13 +28,19 @@ def infer_business_category(assets: BrandAssets) -> str:
     return (assets.site_title or "Commercial Business").strip()
 
 
-async def generate_script(assets: BrandAssets, aspect_ratio: str = "16:9") -> Script:
-    """Generate a punchy ad script and derive scene-specific image search queries directly from the generated copy."""
+async def generate_script(
+    assets: BrandAssets,
+    aspect_ratio: str = "16:9",
+    required_scenes: int | None = None,
+) -> Script:
+    """Generate an ad script with the exact scene count required by a template."""
+    if required_scenes is not None and required_scenes < 1:
+        raise ValueError("required_scenes must be at least 1")
     if not LLM_API_KEY:
         logger.warning("LLM_API_KEY not set; generating heuristic script")
-        return _heuristic_script(assets)
+        return _heuristic_script(assets, required_scenes=required_scenes)
 
-    prompt = _build_prompt(assets, aspect_ratio)
+    prompt = _build_prompt(assets, aspect_ratio, required_scenes=required_scenes)
     headers = {"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"}
     body = {
         "model": LLM_MODEL,
@@ -82,17 +88,36 @@ async def generate_script(assets: BrandAssets, aspect_ratio: str = "16:9") -> Sc
             scenes.append(scene)
             t += dur
 
+        if required_scenes is not None:
+            scenes = _fit_scene_count(scenes, assets, required_scenes)
+            t = 0.0
+            for scene in scenes:
+                duration = max(scene.end - scene.start, 1.5)
+                scene.start = t
+                scene.end = t + duration
+                t += duration
+
         logger.info("Generated %d-scene ad script for category '%s'", len(scenes), business_category)
         return Script(duration=t, scenes=scenes, business_category=business_category)
 
     except Exception as e:
         logger.warning("LLM generation failed; using heuristic fallback: %s", e)
-        return _heuristic_script(assets)
+        return _heuristic_script(assets, required_scenes=required_scenes)
 
 
-def _heuristic_script(assets: BrandAssets) -> Script:
+def _fit_scene_count(scenes: list[Scene], assets: BrandAssets, required_scenes: int) -> list[Scene]:
+    """Trim or supplement an LLM response so template slots are always satisfied."""
+    scenes = scenes[:required_scenes]
+    fallback = _heuristic_script(assets, required_scenes=required_scenes).scenes
+    while len(scenes) < required_scenes:
+        scenes.append(fallback[len(scenes)])
+    return scenes
+
+
+def _heuristic_script(assets: BrandAssets, required_scenes: int | None = None) -> Script:
     """Universal fallback script for any brand type."""
     category = infer_business_category(assets)
+    scene_count = required_scenes or 4
     durations = [3.5, 4.5, 5.0, 3.5]
     roles = ["hook", "problem", "solution", "cta"]
     
@@ -113,7 +138,8 @@ def _heuristic_script(assets: BrandAssets) -> Script:
     
     scenes = []
     t = 0.0
-    for i, duration in enumerate(durations):
+    for i in range(scene_count):
+        duration = durations[i % len(durations)]
         scenes.append(Scene(
             id=str(uuid.uuid4()),
             start=t,
@@ -126,12 +152,12 @@ def _heuristic_script(assets: BrandAssets) -> Script:
     return Script(duration=t, scenes=scenes, business_category=category)
 
 
-def _build_prompt(assets: BrandAssets, aspect_ratio: str) -> str:
+def _build_prompt(assets: BrandAssets, aspect_ratio: str, required_scenes: int | None = None) -> str:
     snippet = (assets.raw_text_snippet or "")[:500].replace("\n", " ")
     return (
         "You are an expert commercial video copywriter. Write a ultra-short 15-second video ad script based on the brand info provided.\n\n"
         "RULES:\n"
-        "1. Write 4 CONCISE scenes maximum.\n"
+        f"1. Return exactly {required_scenes or 4} CONCISE scenes.\n"
         "2. Voiceover 'text' MUST be short (under 12 words / 70 characters per scene).\n"
         "3. 'visual_prompt' MUST be 2-4 search terms describing a visual directly matching what is spoken in that specific scene.\n"
         "4. DO NOT include markdown, stage directions, or metadata inside 'text'.\n\n"

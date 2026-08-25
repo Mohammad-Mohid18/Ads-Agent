@@ -43,11 +43,20 @@ async def generate_scene_visuals(
     *,
     cache_to_supabase: bool = True,
     aspect_ratio: str = "16:9",
+    required_images: int | None = None,
 ) -> List[str]:
     """
-    Generate all scene visuals directly via dedicated fal.ai FLUX calls for every scene (min 5).
-    Guarantees strict scene-index mapping, fresh generation per run, and prevents image reuse.
+    Generate the exact number of requested scene visuals. When omitted, one visual
+    is generated for every script scene for backwards compatibility.
     """
+    image_count = len(script.scenes) if required_images is None else required_images
+    if image_count < 1:
+        raise ValueError("required_images must be at least 1")
+    if len(script.scenes) < image_count:
+        raise ValueError(
+            f"Script has {len(script.scenes)} scenes but {image_count} images were requested"
+        )
+
     category = (script.business_category or "").strip() or infer_business_category(assets)
     script.business_category = category
     urls: List[str] = []
@@ -57,10 +66,10 @@ async def generate_scene_visuals(
     if not fal_enabled:
         logger.warning(
             "FAL_KEY not set — using unique niche visual assets for all %d scenes",
-            len(script.scenes),
+            image_count,
         )
 
-    for idx, scene in enumerate(script.scenes):
+    for idx, scene in enumerate(script.scenes[:image_count]):
         prompt = (scene.visual_prompt or "").strip()
         if not prompt:
             raise ValueError(f"Scene {idx + 1} ({scene.id}) is missing a required visual_prompt")

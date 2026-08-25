@@ -6,13 +6,15 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 
 from models import BrandAssets, EditRequest, Script, Storage, VideoProject, VoiceResult
 from services.asset_storage import download_url_bytes, upload_bytes
+from services.llm_script import generate_script
 from services.visuals import generate_scene_visuals
+from services.voice import synthesize_voice_for_script
 from services.visual_sanitizer import (
     clean_asset_url,
     sanitize_audio_url,
@@ -28,6 +30,34 @@ CREATOMATE_RENDER_MODE = (os.getenv("CREATOMATE_RENDER_MODE") or "renderscript")
 RENDER_DIR = Path(__file__).resolve().parent.parent / "data" / "session_renders"
 POLL_INTERVAL_SEC = float(os.getenv("CREATOMATE_POLL_INTERVAL", "2.5"))
 POLL_TIMEOUT_SEC = float(os.getenv("CREATOMATE_POLL_TIMEOUT", "300"))
+
+
+# ==============================================================================
+# CREATOMATE TEMPLATE REGISTRY
+# ==============================================================================
+
+TEMPLATES = {
+    "service_local": {
+        "id": "d8110d66-798e-432e-b744-3818a54ff3da",
+        "name": "Service / Local Business",
+        "required_scenes": 2,
+        "required_images": 1,
+    },
+    "news_showcase": {
+        "id": "0c177ed9-ee0b-46fb-b26b-36737d8cc738",
+        "name": "News / Multi-Scene Highlight",
+        "required_scenes": 3,
+        "required_images": 3,
+    },
+    "product": {
+        "id": "a248f122-6ecc-4869-9782-75f90890517e",
+        "name": "Product / E-commerce",
+        "required_scenes": 2,
+        "required_images": 1,
+    },
+}
+
+DEFAULT_TEMPLATE_ID = TEMPLATES["service_local"]["id"]
 
 
 def _normalize_renders_url(url: str) -> str:
@@ -52,22 +82,189 @@ def _normalize_template_id(value: str) -> str:
     return match.group(0) if match else value
 
 
-CREATOMATE_TEMPLATE_ID = _normalize_template_id(CREATOMATE_TEMPLATE_ID)
+# CREATOMATE_TEMPLATE_ID = _normalize_template_id(CREATOMATE_TEMPLATE_ID)
+
+# ==============================================================================
+# TEMPLATE-SPECIFIC PAYLOAD BUILDERS
+# ==============================================================================
+
+def _build_service_local_payload(
+    script: Script, 
+    image_urls: list[str], 
+    voice_url: str
+) -> dict[str, Any]:
+    """
+    Template 1: Service / Local Business (Quick Promo)
+    - Layers: Text-1, Text-2, Video, Audio
+    """
+    text_1_content = script.scenes[0].text if script.scenes else "Discover Our Services"
+    text_2_content = " ".join([s.text for s in script.scenes[1:]]) if len(script.scenes) > 1 else text_1_content
+
+    return {
+        "Audio": voice_url,
+        "Video": image_urls[0] if image_urls else "https://creatomate.com/files/assets/7347c3b7-e1a8-4439-96f1-f3dfc95c3d28",
+        "Text-1": text_1_content,
+        "Text-2": text_2_content,
+    }
 
 
-async def build_and_render_video(
+def _build_news_showcase_payload(
+    script: Script, 
+    image_urls: list[str], 
+    voice_url: str
+) -> dict[str, Any]:
+    """
+    Template 2: News / Multi-Scene Highlight (0c177ed9-ee0b-46fb-b26b-36737d8cc738)
+    - Layers: Image-1.source, Image-2.source, Image-3.source,
+              Text-1.text, Text-2.text, Text-3.text, Audio
+    """
+    modifications: dict[str, Any] = {
+        "Audio": voice_url,
+    }
+
+    # Populate 3 image and headline pairs
+    for i in range(3):
+        n = i + 1
+        scene_text = script.scenes[i].text if i < len(script.scenes) else (script.scenes[-1].text if script.scenes else "")
+        img_src = image_urls[i] if i < len(image_urls) else (image_urls[-1] if image_urls else "")
+
+        modifications[f"Image-{n}.source"] = img_src
+        modifications[f"Text-{n}.text"] = scene_text
+
+    return modifications
+
+
+
+def _build_ecommerce_payload(
+    script: Script, 
+    image_urls: list[str], 
+    voice_url: str,
+    assets: Optional[BrandAssets] = None
+) -> dict[str, Any]:
+    """
+    Template 3: Product / E-commerce Highlight
+    - Layers: Product-Image.source, Product-Name.text, Product-Description.text, 
+              Normal-Price.text, Discounted-Price.text, CTA.text, Website.text, Audio
+    """
+    hook_text = script.scenes[0].text if script.scenes else "Exclusive Offer Available Now"
+    cta_text = script.scenes[-1].text if len(script.scenes) > 1 else "Shop Today!"
+    site_name = assets.site_title if assets and assets.site_title else "Featured Product"
+
+    return {
+        "Audio": voice_url,
+        "Product-Image.source": image_urls[0] if image_urls else "https://creatomate.com/files/assets/fe61553c-4274-4586-affe-54cffe99ccdc",
+        "Product-Name.text": site_name[:30],
+        "Product-Description.text": hook_text,
+        "Normal-Price.text": "",
+        "Discounted-Price.text": "Best Deal",
+        "CTA.text": cta_text,
+        "Website.text": site_name.lower().replace(" ", "") + ".com"
+    }
+
+
+# ==============================================================================
+# MAIN ROUTER PAYLOAD BUILDER
+# ==============================================================================
+
+def _build_template_payload(
+    script: Script, 
+    image_urls: list[str], 
+    voice_url: str,
+    template_id: Optional[str] = None,
+    assets: Optional[BrandAssets] = None
+) -> dict[str, Any]:
+    """
+    Routes render payloads to the exact schema required by each Creatomate template.
+    """
+    # 1. Resolve active template ID
+    active_template = (template_id or "").strip()
+
+    if active_template in TEMPLATES:
+        active_template = TEMPLATES[active_template]["id"]
+    if not active_template:
+        active_template = DEFAULT_TEMPLATE_ID
+
+    # 2. Route to specialized payload generator
+    if active_template == TEMPLATES["news_showcase"]["id"]:
+        modifications = _build_news_showcase_payload(script, image_urls, voice_url)
+
+    elif active_template == TEMPLATES["product"]["id"]:
+        modifications = _build_ecommerce_payload(script, image_urls, voice_url, assets)
+
+    else:
+        # Default: Service / Local Business
+        modifications = _build_service_local_payload(script, image_urls, voice_url)
+
+    return {
+        "template_id": active_template,
+        "modifications": modifications,
+    }
+
+
+async def render_single_template(
+    project: VideoProject,
+    assets: BrandAssets,
+    script: Script,
+    voice_url: str,
+    image_urls: list[str],
+    template_key: str,
+    template_id: str,
+) -> tuple[str, str]:
+    """Renders a single template and uploads its finished video to Supabase."""
+    body = _build_template_payload(
+        script=script, 
+        image_urls=image_urls, 
+        voice_url=voice_url, 
+        template_id=template_id, 
+        assets=assets
+    )
+
+    if not VIDEO_API_KEY:
+        preview = await _render_local_video(project, script, template_key=template_key)
+        return template_key, preview
+
+    headers = {
+        "Authorization": f"Bearer {VIDEO_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(VIDEO_API_URL, headers=headers, json=body)
+            if response.is_error:
+                logger.error("Template '%s' failed (%d): %s", template_key, response.status_code, response.text[:300])
+                return template_key, ""
+
+            payload = response.json()
+            render = payload[0] if isinstance(payload, list) else payload
+            render_id = render.get("id")
+
+            final = await _poll_render(client, headers, render_id)
+            remote_url = final.get("url")
+
+        # Download rendered MP4 and persist to Supabase
+        video_bytes = await download_url_bytes(remote_url)
+        object_path = f"renders/{project.id}_{template_key}_v{project.version}.mp4"
+        stored_url = await upload_bytes(object_path, video_bytes, "video/mp4")
+
+        # Return public direct Supabase URL for immediate playback
+        public_url = clean_asset_url(stored_url) or stored_url
+        return template_key, public_url
+
+    except Exception as exc:
+        logger.exception("Failed rendering template %s: %s", template_key, exc)
+        return template_key, ""
+
+
+async def render_all_templates(
     project: VideoProject,
     assets: BrandAssets,
     script: Script,
     voice: VoiceResult,
-) -> str:
-    """Submit a Creatomate render, wait for completion, upload MP4 to Supabase."""
+) -> dict[str, str]:
+    """Generates visual and voice assets once, then renders all 3 templates simultaneously."""
     
-    # 1. Reset scene image state to guarantee fresh fal.ai visual generation for every run
-    for scene in script.scenes:
-        scene.image_url = None
-
-    # 2. Directly call generate_scene_visuals to create fresh, business-tailored fal.ai images
+    # 1. Prepare visual assets & audio once
     image_urls = await generate_scene_visuals(
         script=script,
         assets=assets,
@@ -75,105 +272,93 @@ async def build_and_render_video(
         aspect_ratio=project.aspect_ratio or "16:9",
     )
 
-    # 3. Sanitize voiceover audio URL
     raw_voice = voice.full_audio_url or (voice.segments[0].audio_url if voice.segments else None)
     voice_url = await sanitize_audio_url(raw_voice)
-    voice.full_audio_url = voice_url
-    for segment in voice.segments:
-        segment.audio_url = voice_url
 
-    if CREATOMATE_RENDER_MODE == "template" and CREATOMATE_TEMPLATE_ID:
-        body = _build_template_payload(script, image_urls, voice_url)
-    else:
-        body = _build_renderscript_payload(project, script, image_urls, voice_url)
+    # 2. Run all 3 renders in parallel
+    tasks = [
+        render_single_template(
+            project=project,
+            assets=assets,
+            script=script,
+            voice_url=voice_url,
+            image_urls=image_urls,
+            template_key=t_key,
+            template_id=t_info["id"],
+        )
+        for t_key, t_info in TEMPLATES.items()
+    ]
 
-    project.layers = {
-        "mode": "template" if body.get("template_id") else "renderscript",
-        "modifications": body.get("modifications"),
-        "image_urls": image_urls,
-        "voiceover_url": voice_url,
-        "source": body.get("source"),
-    }
+    results = await asyncio.gather(*tasks)
+    return {key: url for key, url in results if url}
 
-    if not VIDEO_API_KEY:
-        preview = await _render_local_video(project, script)
-        logger.info("Local video render for project %s -> %s", project.id, preview)
-        return preview
 
-    headers = {
-        "Authorization": f"Bearer {VIDEO_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(VIDEO_API_URL, headers=headers, json=body)
-        if response.is_error:
-            raise RuntimeError(
-                f"Creatomate render request failed ({response.status_code}): {response.text[:500]}"
+async def render_templates_sequentially(
+    project: VideoProject,
+    assets: BrandAssets,
+) -> dict[str, str]:
+    """Render each template with script, voice, and visuals sized for its slots.
+
+    ``assets`` is intentionally supplied by the caller: site scraping happens once
+    before this function and is shared across the sequential template renders.
+    """
+    storage = Storage()
+    project.preview_urls = project.preview_urls or {}
+
+    for template_key, template in TEMPLATES.items():
+        try:
+            script = await generate_script(
+                assets,
+                project.aspect_ratio or "16:9",
+                required_scenes=template["required_scenes"],
             )
-        payload = response.json()
-        render = payload[0] if isinstance(payload, list) else payload
-        render_id = render.get("id")
-        if not render_id:
-            raise RuntimeError(f"Creatomate response missing render id: {payload}")
-        logger.info("Creatomate render queued id=%s status=%s", render_id, render.get("status"))
+            voice = await synthesize_voice_for_script(script, project_id=project.id)
+            image_urls = await generate_scene_visuals(
+                script=script,
+                assets=assets,
+                project_id=project.id,
+                aspect_ratio=project.aspect_ratio or "16:9",
+                required_images=template["required_images"],
+            )
+            raw_voice = voice.full_audio_url or (
+                voice.segments[0].audio_url if voice.segments else None
+            )
+            voice_url = await sanitize_audio_url(raw_voice)
+            if not voice_url:
+                raise RuntimeError("Voiceover synthesis returned no usable audio URL")
 
-        final = await _poll_render(client, headers, render_id)
-        remote_url = final.get("url")
-        if not remote_url:
-            raise RuntimeError(f"Creatomate render succeeded without url: {final}")
+            key, preview_url = await render_single_template(
+                project=project,
+                assets=assets,
+                script=script,
+                voice_url=voice_url,
+                image_urls=image_urls,
+                template_key=template_key,
+                template_id=template["id"],
+            )
+            if not preview_url:
+                raise RuntimeError("Creatomate did not return a render URL")
 
-    # Download finished MP4 and store in Supabase
-    video_bytes = await download_url_bytes(remote_url)
-    object_path = f"renders/{project.id}_v{project.version}.mp4"
-    stored_url = await upload_bytes(object_path, video_bytes, "video/mp4")
-    preview = f"/media/{object_path}"
-    project.layers = {
-        **(project.layers or {}),
-        "creatomate_render_id": render_id,
-        "creatomate_url": remote_url,
-        "supabase_url": clean_asset_url(stored_url) or stored_url,
-        "storage_path": object_path,
-    }
-    logger.info("Creatomate render saved to Supabase %s", object_path)
-    return preview
+            project.script = script
+            project.voice = voice
+            project.layers = {
+                "template_key": template_key,
+                "template_id": template["id"],
+                "required_scenes": template["required_scenes"],
+                "required_images": template["required_images"],
+                "image_urls": image_urls,
+                "voiceover_url": voice_url,
+            }
+            project.preview_urls[key] = preview_url
+            project.preview_url = project.preview_url or preview_url
+            project.error = None
+            storage.save_project(project)
+            logger.info("Completed template '%s' for project %s", template_key, project.id)
+        except Exception as exc:
+            # A bad template payload must not prevent the remaining variants.
+            logger.exception("Template '%s' failed for project %s: %s", template_key, project.id, exc)
 
-
-def _build_template_payload(
-    script: Script, 
-    image_urls: list[str], 
-    voice_url: str,
-    assets: BrandAssets = None
-) -> dict[str, Any]:
-    """
-    Creatomate template payload mapped precisely to the 'Quick Promo' template layers.
-    """
-    # 1. Combine generated script scenes into template's two main text layers
-    text_1_content = script.scenes[0].text if script.scenes else "Discover Innovation"
-    
-    # Combine middle scenes for Text-2
-    if len(script.scenes) > 1:
-        middle_texts = [s.text for s in script.scenes[1:]]
-        text_2_content = " ".join(middle_texts)
-    else:
-        text_2_content = text_1_content
-
-    # 2. Map payload keys directly to layer names shown in Creatomate sidebar
-    modifications: dict[str, Any] = {
-        # Audio track
-        "Audio": voice_url,
-        
-        # Background Visual (Uses Video layer key shown in template editor)
-        "Video": image_urls[0] if image_urls else "https://creatomate.com/files/assets/7347c3b7-e1a8-4439-96f1-f3dfc95c3d28",
-        
-        # Text Overlays
-        "Text-1": text_1_content,
-        "Text-2": text_2_content,
-    }
-
-    return {
-        "template_id": CREATOMATE_TEMPLATE_ID,
-        "modifications": modifications,
-    }
+    return project.preview_urls
 
 def _get_ken_burns_animation(idx: int, duration: float) -> list[dict[str, Any]]:
     """Generate alternating Ken Burns motion effects per scene."""
@@ -432,20 +617,30 @@ async def edit_ad_component(project: VideoProject, req: EditRequest, storage: St
 async def _trigger_render_sim(project: VideoProject) -> str:
     if not project.script or not project.voice or not project.brand_assets:
         raise ValueError("Cannot re-render an incomplete project")
-    preview = await build_and_render_video(
+        
+    # Re-render all template variants in parallel
+    preview_urls = await render_all_templates(
         project, project.brand_assets, project.script, project.voice
     )
+    
+    project.preview_urls = preview_urls
+    preview = next(iter(preview_urls.values()), "")
     project.preview_url = preview
     project.status = "ready"
     return preview
 
 
-async def _render_local_video(project: VideoProject, script: Script) -> str:
+async def _render_local_video(
+    project: VideoProject,
+    script: Script,
+    *,
+    template_key: str = "preview",
+) -> str:
     """Create a real MP4 in the temporary session cache (demo fallback)."""
     RENDER_DIR.mkdir(parents=True, exist_ok=True)
     width, height = (1080, 1920) if project.aspect_ratio == "9:16" else (1920, 1080)
     color = _safe_color(project.brand_assets.primary_color if project.brand_assets else None)
-    filename = f"{project.id}_v{project.version}.mp4"
+    filename = f"{project.id}_{template_key}_v{project.version}.mp4"
     output_path = RENDER_DIR / filename
     text_path = RENDER_DIR / f"{project.id}_v{project.version}.txt"
     text_path.write_text("\n\n".join(scene.text for scene in script.scenes), encoding="utf-8")
