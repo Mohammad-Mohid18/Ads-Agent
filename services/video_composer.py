@@ -102,6 +102,9 @@ def _build_service_local_payload(
 
     return {
         "Audio": voice_url,
+        "Audio.source": voice_url,
+        "Voiceover": voice_url,
+        "Voiceover.source": voice_url,
         "Video": image_urls[0] if image_urls else "https://creatomate.com/files/assets/7347c3b7-e1a8-4439-96f1-f3dfc95c3d28",
         "Text-1": text_1_content,
         "Text-2": text_2_content,
@@ -120,6 +123,9 @@ def _build_news_showcase_payload(
     """
     modifications: dict[str, Any] = {
         "Audio": voice_url,
+        "Audio.source": voice_url,
+        "Voiceover": voice_url,
+        "Voiceover.source": voice_url,
     }
 
     # Populate 3 image and headline pairs
@@ -152,6 +158,9 @@ def _build_ecommerce_payload(
 
     return {
         "Audio": voice_url,
+        "Audio.source": voice_url,
+        "Voiceover": voice_url,
+        "Voiceover.source": voice_url,
         "Product-Image.source": image_urls[0] if image_urls else "https://creatomate.com/files/assets/fe61553c-4274-4586-affe-54cffe99ccdc",
         "Product-Name.text": site_name[:30],
         "Product-Description.text": hook_text,
@@ -198,6 +207,14 @@ def _build_template_payload(
     return {
         "template_id": active_template,
         "modifications": modifications,
+        # Force-inject voiceover track into templates lacking an Audio layer
+        "elements": [
+            {
+                "type": "audio",
+                "source": voice_url,
+                "volume": "100%",
+            }
+        ],
     }
 
 

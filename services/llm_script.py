@@ -11,7 +11,7 @@ logger = logging.getLogger("ai_ad_engine.llm")
 
 LLM_API_KEY = os.getenv("OPENROUTER_API_KEY")
 LLM_API_URL = os.getenv("LLM_API_URL", "https://openrouter.ai/api/v1/chat/completions")
-LLM_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free")
+LLM_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
 
 
 def _clean_text(text: str) -> str:

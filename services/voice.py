@@ -18,6 +18,7 @@ from services.asset_storage import upload_bytes
 
 logger = logging.getLogger("ai_ad_engine.voice")
 
+TTS_API_KEY = (os.getenv("TTS_API_KEY") or os.getenv("ELEVENLABS_API_KEY") or "").strip()
 TTS_PROVIDER = (os.getenv("TTS_PROVIDER") or "elevenlabs").strip().lower()
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL_ID", "eleven_flash_v2_5")
