@@ -1,4 +1,4 @@
-"""Generate per-scene visual assets via fal.ai using business-category context."""
+"""Generate per-scene visuals through Hugging Face with resilient fallbacks."""
 from __future__ import annotations
 
 import logging
@@ -11,17 +11,16 @@ from services.asset_storage import download_url_bytes, upload_bytes
 from services.llm_script import infer_business_category
 from services.visual_sanitizer import (
     clean_asset_url,
-    generate_fal_fallback_image,
-    get_niche_fallback_image,
+    generate_image_with_fallbacks,
+    get_pollinations_fallback_image,
 )
 
 logger = logging.getLogger("ai_ad_engine.visuals")
 
-FAL_KEY = os.getenv("FAL_KEY") or os.getenv("FAL_API_KEY")
-FAL_MODEL = os.getenv("FAL_IMAGE_MODEL", "fal-ai/flux/schnell")
+HF_API_TOKEN = (os.getenv("HF_API_TOKEN") or "").strip()
 
 
-def build_fal_prompt(business_category: str, visual_prompt: str, assets: BrandAssets) -> str:
+def build_image_prompt(business_category: str, visual_prompt: str, assets: BrandAssets) -> str:
     """
     Combine niche, brand identity, and scene visual prompt with quality-boosting commercial photography keywords.
     """
@@ -62,10 +61,9 @@ async def generate_scene_visuals(
     urls: List[str] = []
     seen_urls: set[str] = set()
 
-    fal_enabled = bool((os.getenv("FAL_KEY") or os.getenv("FAL_API_KEY") or FAL_KEY or "").strip())
-    if not fal_enabled:
+    if not HF_API_TOKEN:
         logger.warning(
-            "FAL_KEY not set — using unique niche visual assets for all %d scenes",
+            "HF_API_TOKEN not set — using Pexels and Pollinations fallbacks for all %d scenes",
             image_count,
         )
 
@@ -74,34 +72,35 @@ async def generate_scene_visuals(
         if not prompt:
             raise ValueError(f"Scene {idx + 1} ({scene.id}) is missing a required visual_prompt")
 
-        fal_prompt = build_fal_prompt(category, prompt, assets)
+        image_prompt = build_image_prompt(category, prompt, assets)
         logger.info(
-            "Generating fresh visual via fal.ai for scene %s/%s (%s) category=%s",
+            "Generating visual via Hugging Face for scene %s/%s (%s) category=%s",
             idx + 1,
             len(script.scenes),
             scene.role,
             category,
         )
 
-        # Force fresh generation via fal.ai for every new pipeline run
+        # The generator logs its Hugging Face/Pexels/Pollinations provider choice.
         candidate: Optional[str] = None
         try:
-            candidate = await generate_fal_fallback_image(
-                fal_prompt,
+            candidate = await generate_image_with_fallbacks(
+                image_prompt,
                 aspect_ratio=aspect_ratio,
                 scene_idx=idx,
                 category=category,
+                project_id=project_id,
             )
         except Exception as exc:
-            logger.warning("fal.ai generation raised for scene %s: %s", idx + 1, exc)
+            logger.warning("Image generation raised for scene %s: %s", idx + 1, exc)
 
         safe_url = clean_asset_url(candidate) if candidate else None
         if not safe_url:
-            safe_url = get_niche_fallback_image(category, idx)
+            safe_url = get_pollinations_fallback_image(image_prompt, scene_idx=idx)
 
         # Enforce anti-duplication: never reuse the same URL for multiple scenes
         if safe_url in seen_urls:
-            safe_url = get_niche_fallback_image(category, idx)
+            safe_url = get_pollinations_fallback_image(image_prompt, scene_idx=idx)
 
         # Cache freshly generated image to Supabase with unique scene-specific path
         if cache_to_supabase and safe_url.startswith("http") and "supabase.co" not in safe_url:
@@ -120,7 +119,7 @@ async def generate_scene_visuals(
             except Exception as exc:
                 logger.warning("Supabase image cache failed for scene %s; using source URL: %s", idx + 1, exc)
 
-        safe_url = clean_asset_url(safe_url) or get_niche_fallback_image(category, idx)
+        safe_url = clean_asset_url(safe_url) or get_pollinations_fallback_image(image_prompt, scene_idx=idx)
         seen_urls.add(safe_url)
         urls.append(safe_url)
         

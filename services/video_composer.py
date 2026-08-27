@@ -744,14 +744,15 @@ async def edit_ad_component(project: VideoProject, req: EditRequest, storage: St
         if new_value.startswith(("http://", "https://")):
             image_url = new_value
         else:
-            from services.visual_sanitizer import generate_fal_fallback_image
+            from services.visual_sanitizer import generate_image_with_fallbacks
             scene = script.scenes[min(index, len(script.scenes) - 1)]
             scene.visual_prompt = new_value
-            image_url = await generate_fal_fallback_image(
+            image_url = await generate_image_with_fallbacks(
                 prompt=new_value,
                 aspect_ratio=project.aspect_ratio or "16:9",
                 scene_idx=index,
                 category=script.business_category,
+                project_id=project.id,
             )
         if not image_url:
             raise RuntimeError("Image generation did not return an image URL")

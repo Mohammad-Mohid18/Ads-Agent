@@ -1,7 +1,6 @@
-"""Validate media URLs for Creatomate and fall back to fal.ai (or niche-tailored visuals) when assets are broken."""
+"""Validate Creatomate media and generate image fallbacks when assets are broken."""
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import uuid
@@ -9,82 +8,22 @@ from typing import Optional
 from urllib.parse import quote, urlparse, urlunparse
 
 import httpx
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+
+from services.asset_storage import upload_bytes
 
 logger = logging.getLogger("ai_ad_engine.sanitizer")
 
 VALID_IMAGE_TYPES = ("image/jpeg", "image/png", "image/webp", "image/jpg")
 VALID_AUDIO_TYPES = ("audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/mp4", "audio/aac")
 
-# Curated, distinct 5-scene high-res commercial imagery per niche to eliminate single-image repetition
-NICHE_FALLBACK_IMAGES: dict[str, list[str]] = {
-    "Social Media & Camera Platform": [
-        "https://images.unsplash.com/photo-1516251193007-45ef944ab0c6?q=80&w=1600&auto=format&fit=crop",  # Neon Gen-Z smartphone
-        "https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=1600&auto=format&fit=crop",  # Expressive portrait
-        "https://images.unsplash.com/photo-1529156069898-49953e39b3ac?q=80&w=1600&auto=format&fit=crop",  # Friends laughing outdoors
-        "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1600&auto=format&fit=crop",  # Vibrant dynamic abstract/AR
-        "https://images.unsplash.com/photo-1511707171634-5f897ff02aa9?q=80&w=1600&auto=format&fit=crop",  # Glowing phone lifestyle
-    ],
-    "Artisanal Coffee Brand": [
-        "https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?q=80&w=1600&auto=format&fit=crop",  # Espresso pouring
-        "https://images.unsplash.com/photo-1509785307050-d4066910ec1e?q=80&w=1600&auto=format&fit=crop",  # Moody cafe setting
-        "https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?q=80&w=1600&auto=format&fit=crop",  # Barista latte art
-        "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?q=80&w=1600&auto=format&fit=crop",  # Joyful cafe customer
-        "https://images.unsplash.com/photo-1447933601403-0c6688de566e?q=80&w=1600&auto=format&fit=crop",  # Roasted coffee beans
-    ],
-    "Fitness & Wellness Brand": [
-        "https://images.unsplash.com/photo-1517838277536-f5f99be501cd?q=80&w=1600&auto=format&fit=crop",  # Intense athletic workout
-        "https://images.unsplash.com/photo-1571019613454-1cb2f99b2d8b?q=80&w=1600&auto=format&fit=crop",  # Focused training
-        "https://images.unsplash.com/photo-1534438327276-14e5300c3a48?q=80&w=1600&auto=format&fit=crop",  # Dynamic gym performance
-        "https://images.unsplash.com/photo-1506126613408-eca07ce68773?q=80&w=1600&auto=format&fit=crop",  # Sunrise wellness/yoga
-        "https://images.unsplash.com/photo-1434596922112-19c563067271?q=80&w=1600&auto=format&fit=crop",  # Athletic gear/finish
-    ],
-    "Fintech Platform": [
-        "https://images.unsplash.com/photo-1563986768609-322da13575f3?q=80&w=1600&auto=format&fit=crop",  # Modern digital finance
-        "https://images.unsplash.com/photo-1559526324-4b87b5e36e44?q=80&w=1600&auto=format&fit=crop",  # Analytical fintech
-        "https://images.unsplash.com/photo-1556742049-0a67e557224f?q=80&w=1600&auto=format&fit=crop",  # Contactless mobile payment
-        "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?q=80&w=1600&auto=format&fit=crop",  # Confident business leader
-        "https://images.unsplash.com/photo-1559526324-593bc073d938?q=80&w=1600&auto=format&fit=crop",  # Premium modern investment
-    ],
-    "SaaS & AI Platform": [
-        "https://images.unsplash.com/photo-1518770660439-4636190af475?q=80&w=1600&auto=format&fit=crop",  # AI & Tech innovation
-        "https://images.unsplash.com/photo-1522071820081-009f0129c71c?q=80&w=1600&auto=format&fit=crop",  # Creative team collaboration
-        "https://images.unsplash.com/photo-1551288049-bebda4e38f71?q=80&w=1600&auto=format&fit=crop",  # Modern clean visual insights
-        "https://images.unsplash.com/photo-1531482615713-2afd69097998?q=80&w=1600&auto=format&fit=crop",  # High-energy presentation
-        "https://images.unsplash.com/photo-1451187580459-43490279c0fa?q=80&w=1600&auto=format&fit=crop",  # Futuristic global network
-    ],
-    "Default": [
-        "https://images.unsplash.com/photo-1557804506-669a67965ba0?q=80&w=1600&auto=format&fit=crop",  # Modern creative showcase
-        "https://images.unsplash.com/photo-1542744173-8e7e53415bb0?q=80&w=1600&auto=format&fit=crop",  # Problem-solving workflow
-        "https://images.unsplash.com/photo-1460925895917-afdab827c52f?q=80&w=1600&auto=format&fit=crop",  # Modern digital tools
-        "https://images.unsplash.com/photo-1522202176988-66273c2fd55f?q=80&w=1600&auto=format&fit=crop",  # Joyful collaborative achievement
-        "https://images.unsplash.com/photo-1507679799987-c73779587ccf?q=80&w=1600&auto=format&fit=crop",  # Inspiring leadership call-to-action
-    ],
-}
-
-FAL_MODEL = os.getenv("FAL_IMAGE_MODEL", "fal-ai/flux/schnell")
-
-
-def get_niche_fallback_image(category: Optional[str] = None, scene_idx: int = 0) -> str:
-    """Retrieve a unique, niche-appropriate image for each scene index to avoid repeated imagery."""
-    matched_key = "Default"
-    if category:
-        cat_lower = category.lower()
-        if any(w in cat_lower for w in ("social", "camera", "chat", "lens", "snap", "media", "tiktok", "instagram", "creator")):
-            matched_key = "Social Media & Camera Platform"
-        elif any(w in cat_lower for w in ("coffee", "cafe", "espresso", "bakery", "roast")):
-            matched_key = "Artisanal Coffee Brand"
-        elif any(w in cat_lower for w in ("fit", "gym", "workout", "yoga", "train", "run", "wellness", "athlet")):
-            matched_key = "Fitness & Wellness Brand"
-        elif any(w in cat_lower for w in ("fin", "bank", "pay", "invest", "crypto", "trade", "money")):
-            matched_key = "Fintech Platform"
-        elif any(w in cat_lower for w in ("saas", "software", "ai", "tech", "cloud", "dev", "app", "platform")):
-            matched_key = "SaaS & AI Platform"
-
-    pool = NICHE_FALLBACK_IMAGES.get(matched_key) or NICHE_FALLBACK_IMAGES["Default"]
-    base_url = pool[scene_idx % len(pool)]
-    # Append unique signature / cache buster
-    return f"{base_url}&sig={uuid.uuid4().hex[:8]}"
-
+HF_API_TOKEN = (os.getenv("HF_API_TOKEN") or "").strip()
+HF_MODEL_URL = os.getenv(
+    "HF_MODEL_URL",
+    "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell",
+).strip()
 
 
 def clean_asset_url(url: Optional[str]) -> Optional[str]:
@@ -168,8 +107,6 @@ def _content_type_ok(content_type: Optional[str], allowed: tuple[str, ...]) -> b
     ct = (content_type or "").lower()
     return any(vt in ct for vt in allowed)
 
-from urllib.parse import quote
-
 async def fetch_pexels_fallback_image(
     prompt: str,
     scene_idx: int = 0,
@@ -209,49 +146,76 @@ async def fetch_pexels_fallback_image(
     return None
 
 
-# 2. UPDATED FAL.AI GENERATION WITH PEXELS FALLBACK
-async def generate_fal_fallback_image(
+# 2. HUGGING FACE SERVERLESS GENERATION WITH PEXELS + POLLINATIONS FALLBACKS
+def get_pollinations_fallback_image(prompt: str, *, scene_idx: int = 0) -> str:
+    """Return a distinct Pollinations image URL when generated or stock media fails."""
+    safe_prompt = quote((prompt or "professional commercial product photography").strip())
+    return (
+        f"https://image.pollinations.ai/prompt/{safe_prompt}"
+        f"?width=1280&height=720&nologo=true&seed={scene_idx + 1}"
+    )
+
+
+def _image_content_type(content: bytes, reported_type: str) -> Optional[str]:
+    """Accept Hugging Face image bytes even when its response omits a MIME type."""
+    if reported_type.startswith("image/"):
+        return reported_type
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+async def generate_image_with_fallbacks(
     prompt: str,
     aspect_ratio: str = "16:9",
     scene_idx: int = 0,
     category: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> str:
-    """Generate visual via fal.ai; fall back to Pexels API, then Unsplash niche pools."""
-    logger.info("Generating visual (scene %s) for prompt: %s", scene_idx + 1, (prompt or "")[:100])
-    
-    fal_key = (os.getenv("FAL_KEY") or os.getenv("FAL_API_KEY") or "").strip()
-    
-    # If FAL_KEY is missing or balance exhausted, try Pexels first
-    if fal_enabled := bool(fal_key):
-        os.environ["FAL_KEY"] = fal_key
-        image_size = "portrait_16_9" if aspect_ratio in {"9:16", "portrait"} else "landscape_16_9"
-        safe_prompt = prompt or "Professional clean modern business showcase, cinematic lighting, 8k"
-
-        def _run() -> str:
-            import fal_client
-            result = fal_client.subscribe(
-                FAL_MODEL,
-                arguments={
-                    "prompt": safe_prompt,
-                    "image_size": image_size,
-                    "num_images": 1,
-                    "enable_safety_checker": True,
-                },
-                with_logs=False,
-            )
-            images = result.get("images") or []
-            if not images or not images[0].get("url"):
-                raise RuntimeError("fal.ai returned no image URL")
-            return images[0]["url"]
-
+    """Generate with Hugging Face, then fall back to Pexels and Pollinations."""
+    safe_prompt = prompt or "Professional clean modern business showcase, cinematic lighting"
+    if HF_API_TOKEN:
         try:
-            return await asyncio.to_thread(_run)
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                response = await client.post(
+                    HF_MODEL_URL,
+                    headers={
+                        "Authorization": f"Bearer {HF_API_TOKEN}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "inputs": safe_prompt,
+                        "parameters": {"width": 1280, "height": 720},
+                    },
+                )
+            reported_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+            content_type = _image_content_type(response.content, reported_type)
+            if response.status_code == 200 and content_type and response.content:
+                extension = {"image/png": "png", "image/webp": "webp"}.get(content_type, "jpg")
+                object_path = (
+                    f"media/images/{project_id or 'generated'}/"
+                    f"hf_scene_{scene_idx + 1}_{uuid.uuid4().hex[:10]}.{extension}"
+                )
+                public_url = await upload_bytes(object_path, response.content, content_type)
+                logger.info("Hugging Face generated scene %s and uploaded %s", scene_idx + 1, object_path)
+                return public_url
+            logger.warning(
+                "Hugging Face returned status=%s content_type=%s for scene %s; using Pexels fallback",
+                response.status_code,
+                reported_type or "unknown",
+                scene_idx + 1,
+            )
         except Exception as exc:
-            logger.warning("fal.ai generation failed for scene %s (%s). Attempting Pexels fallback...", scene_idx + 1, exc)
+            logger.warning("Hugging Face generation failed for scene %s: %s; using Pexels fallback", scene_idx + 1, exc)
+    else:
+        logger.warning("HF_API_TOKEN is not configured; using Pexels fallback for scene %s", scene_idx + 1)
 
-    # Fallback 1: Query Pexels API
     pexels_url = await fetch_pexels_fallback_image(
-        prompt=prompt,
+        prompt=safe_prompt,
         scene_idx=scene_idx,
         category=category,
         aspect_ratio=aspect_ratio,
@@ -259,9 +223,9 @@ async def generate_fal_fallback_image(
     if pexels_url:
         return pexels_url
 
-    # Fallback 2: Local Unsplash niche fallback pools
-    logger.warning("Pexels fallback unavailable. Falling back to local niche pool for scene %s", scene_idx + 1)
-    return get_niche_fallback_image(category, scene_idx)
+    pollinations_url = get_pollinations_fallback_image(safe_prompt, scene_idx=scene_idx)
+    logger.warning("Pexels returned no image; using Pollinations fallback for scene %s", scene_idx + 1)
+    return pollinations_url
 
 
 async def sanitize_scene_visual(
@@ -272,7 +236,7 @@ async def sanitize_scene_visual(
     scene_idx: int = 0,
     category: Optional[str] = None,
 ) -> str:
-    """Validate image URL; replace with fal.ai or unique niche visual when invalid."""
+    """Validate an image URL; regenerate via the configured fallback chain if needed."""
     candidate = clean_asset_url(scraped_url)
     if candidate and await is_valid_creatomate_image(candidate):
         return candidate
@@ -282,10 +246,10 @@ async def sanitize_scene_visual(
         scene_idx + 1,
         (scraped_url or "")[:100],
     )
-    fresh_url = await generate_fal_fallback_image(
+    fresh_url = await generate_image_with_fallbacks(
         visual_prompt, aspect_ratio=aspect_ratio, scene_idx=scene_idx, category=category
     )
-    return clean_asset_url(fresh_url) or get_niche_fallback_image(category, scene_idx)
+    return clean_asset_url(fresh_url) or get_pollinations_fallback_image(visual_prompt, scene_idx=scene_idx)
 
 
 async def sanitize_audio_url(audio_url: Optional[str]) -> str:
@@ -315,9 +279,8 @@ async def sanitize_image_list(
         )
         # Prevent duplicate image reuse across scenes
         if cleaned in seen_urls:
-            cleaned = get_niche_fallback_image(category, idx)
+            cleaned = get_pollinations_fallback_image(prompt, scene_idx=idx)
         seen_urls.add(cleaned)
         out.append(cleaned)
         logger.info("Sanitized Image-%s -> %s", idx + 1, cleaned[:140])
     return out
-
