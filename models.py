@@ -85,6 +85,7 @@ class GenerateResponse(BaseModel):
 class EditRequest(BaseModel):
     target_layer: str
     new_value: str
+    template_key: Optional[str] = None
 
 
 class EditResponse(BaseModel):

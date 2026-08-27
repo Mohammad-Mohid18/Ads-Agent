@@ -119,6 +119,7 @@ async def _run_full_pipeline(ad_id: str, payload: GenerateRequest):
         storage.save_project(project)
 
 
+@app.get("/api/v1/ads/{ad_id}")
 @app.get("/api/v1/ads/{ad_id}/status")
 async def ad_status(ad_id: str):
     project = storage.get_project(ad_id)
@@ -138,7 +139,7 @@ async def edit_ad(ad_id: str, req: EditRequest, background_tasks: BackgroundTask
     try:
         result = await edit_ad_component(project, req, storage)
         storage.save_project(project)
-        return EditResponse(ad_id=ad_id, status="processing", preview_url=result)
+        return EditResponse(ad_id=ad_id, status="ready", preview_url=result)
     except Exception as e:
         logger.exception("Edit failed for %s: %s", ad_id, e)
         raise HTTPException(status_code=500, detail=str(e))

@@ -112,6 +112,22 @@
       margin-left: 8px;
     }
 
+    .load-session {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) minmax(190px, 0.7fr) auto;
+      gap: 12px;
+      align-items: center;
+      margin-top: 18px;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.7);
+    }
+    .load-session input, .load-session select { min-width: 0; }
+    @media (max-width: 680px) {
+      .load-session, .edit-controls { grid-template-columns: 1fr; }
+    }
+
     /* Multi-Video Batch Grid */
     .editor-section {
       display: none;
@@ -193,7 +209,7 @@
     <main>
       <div class="hero-tag">WEBSITE TO VIDEO AD BATCH</div>
       <h1>Turn your business site into 3 polished video ads.</h1>
-      <p class="subtitle">Paste a business website URL. We will extract brand assets, write a script, generate voiceovers, and render 3 unique template variations simultaneously.</p>
+      <p class="subtitle">Paste a business website URL. We will extract brand assets, write a script, generate voiceovers, and render 3 unique template variations sequentially.</p>
 
       <!-- URL Form -->
       <form id="adForm" onsubmit="generateAd(event)">
@@ -204,7 +220,17 @@
       </form>
       <p class="help-text">Start with a public business website. All 3 ad styles will generate automatically.</p>
 
-      <div class="spinner" id="loader">Generating 3 video ads... (Scraping, Scripting, Synthesizing Voice & Parallel Rendering)</div>
+      <section class="load-session" aria-label="Load existing ad for editing">
+        <input type="text" id="existingAdId" placeholder="Ad ID / Project ID" aria-label="Ad ID or Project ID" />
+        <select id="variantSelector" aria-label="Template variant to edit">
+          <option value="service_local">Service / Local Business</option>
+          <option value="news_showcase">News Showcase</option>
+          <option value="product">Product / E-commerce</option>
+        </select>
+        <button type="button" class="btn-submit" onclick="loadExistingAd()">Load Ad</button>
+      </section>
+
+      <div class="spinner" id="loader">Generating video ads... (Scraping, scripting, voice synthesis, and rendering)</div>
 
       <!-- Editor & Batch Section -->
       <div class="editor-section" id="editorSection">
@@ -216,7 +242,7 @@
         <!-- Targeted Editing Controls -->
         <div class="edit-panel">
           <h4 style="margin-bottom: 6px;">Targeted Editing</h4>
-          <p style="font-size: 12px; color: var(--muted); margin-bottom: 16px;">Swap specific scene images or update script lines across your ad batch.</p>
+          <p style="font-size: 12px; color: var(--muted); margin-bottom: 16px;">Edit the selected template variant. Image values accept a URL or a generation prompt; text edits re-synthesize its voiceover.</p>
 
           <div class="edit-controls">
             <div>
@@ -225,9 +251,9 @@
                 <option value="Image-1">Scene 1 Image (Image-1)</option>
                 <option value="Image-2">Scene 2 Image (Image-2)</option>
                 <option value="Image-3">Scene 3 Image (Image-3)</option>
-                <option value="Image-4">Scene 4 Image (Image-4)</option>
-                <option value="script_line_1">Script Line 1 (Text-1)</option>
-                <option value="script_line_2">Script Line 2 (Text-2)</option>
+                <option value="Text-1">Scene 1 Text (Text-1)</option>
+                <option value="Text-2">Scene 2 Text (Text-2)</option>
+                <option value="Text-3">Scene 3 Text (Text-3)</option>
               </select>
             </div>
 
@@ -245,6 +271,25 @@
 
   <script>
     let currentAdId = null;
+    let latestProject = null;
+    const variantSceneCounts = {
+      service_local: { scenes: 2, images: 1 },
+      news_showcase: { scenes: 3, images: 3 },
+      product: { scenes: 2, images: 1 }
+    };
+
+    function updateTargetLayers() {
+      const variant = document.getElementById('variantSelector').value;
+      const target = document.getElementById('targetLayer');
+      const { scenes, images } = variantSceneCounts[variant];
+      target.innerHTML = '';
+      for (let i = 1; i <= images; i++) {
+        target.add(new Option(`Scene ${i} Image (Image-${i})`, `Image-${i}`));
+      }
+      for (let i = 1; i <= scenes; i++) {
+        target.add(new Option(`Scene ${i} Text (Text-${i})`, `Text-${i}`));
+      }
+    }
 
     async function generateAd(event) {
       event.preventDefault();
@@ -266,6 +311,7 @@
         
         if (res.ok) {
           currentAdId = data.ad_id || data.id || data.project_id;
+          document.getElementById('existingAdId').value = currentAdId;
           
           // Poll until backend completes all 3 parallel renders
           pollAdStatus(currentAdId);
@@ -290,6 +336,10 @@
           const res = await fetch(`/api/v1/ads/${adId}/status`);
           const project = await res.json();
 
+          latestProject = project;
+          if (Object.keys(project.preview_urls || {}).length) {
+            renderVideoBatch(project);
+          }
           if (project.status === 'ready') {
             clearInterval(interval);
             loader.style.display = 'none';
@@ -306,6 +356,24 @@
           console.error("Polling error:", err);
         }
       }, 3000);
+    }
+
+    async function loadExistingAd() {
+      const adId = document.getElementById('existingAdId').value.trim();
+      if (!adId) return alert('Enter an Ad ID / Project ID first');
+
+      try {
+        const res = await fetch(`/api/v1/ads/${encodeURIComponent(adId)}`);
+        const project = await res.json();
+        if (!res.ok) throw new Error(project.detail || 'Project not found');
+
+        currentAdId = adId;
+        latestProject = project;
+        renderVideoBatch(project);
+        if (project.status !== 'ready' && project.status !== 'failed') pollAdStatus(adId);
+      } catch (err) {
+        alert('Could not load ad: ' + err.message);
+      }
     }
 
     function renderVideoBatch(project) {
@@ -326,7 +394,7 @@
         const card = document.createElement('div');
         card.className = 'video-card';
         card.innerHTML = `
-          <h4>${key.replace('_', ' ')} Variant</h4>
+          <h4>${key.replace(/_/g, ' ')}${key === document.getElementById('variantSelector').value ? ' (editing)' : ''}</h4>
           <video controls autoplay loop playsinline>
             <source src="${videoUrl}" type="video/mp4">
             Your browser does not support video playback.
@@ -343,6 +411,7 @@
       
       const layer = document.getElementById('targetLayer').value;
       const val = document.getElementById('newValue').value;
+      const templateKey = document.getElementById('variantSelector').value;
       const loader = document.getElementById('loader');
 
       loader.style.display = 'block';
@@ -351,11 +420,16 @@
         const res = await fetch(`/api/v1/ads/${currentAdId}/edit`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ target_layer: layer, new_value: val })
+          body: JSON.stringify({
+            target_layer: layer,
+            new_value: val,
+            template_key: templateKey
+          })
         });
 
         const data = await res.json();
         if (res.ok) {
+          document.getElementById('newValue').value = '';
           pollAdStatus(currentAdId);
         } else {
           alert('Edit Error: ' + JSON.stringify(data.detail));
@@ -366,6 +440,12 @@
         loader.style.display = 'none';
       }
     }
+
+    document.getElementById('variantSelector').addEventListener('change', () => {
+      updateTargetLayers();
+      if (latestProject) renderVideoBatch(latestProject);
+    });
+    updateTargetLayers();
   </script>
 </body>
 </html>

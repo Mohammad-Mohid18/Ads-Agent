@@ -38,9 +38,9 @@ POLL_TIMEOUT_SEC = float(os.getenv("CREATOMATE_POLL_TIMEOUT", "300"))
 
 TEMPLATES = {
     "service_local": {
-        "id": "d8110d66-798e-432e-b744-3818a54ff3da",
+        "id": "6a2c63d6-178b-4b00-8a19-6dc93251ce5e",
         "name": "Service / Local Business",
-        "required_scenes": 2,
+        "required_scenes": 3,
         "required_images": 1,
     },
     "news_showcase": {
@@ -58,6 +58,12 @@ TEMPLATES = {
 }
 
 DEFAULT_TEMPLATE_ID = TEMPLATES["service_local"]["id"]
+
+
+def _voice_duration(voice: VoiceResult, script: Script) -> float:
+    """Return the measured narration length used to size a template timeline."""
+    duration = voice.total_duration or sum(segment.duration for segment in voice.segments)
+    return round(max(float(duration or 0), float(script.duration or 0), 0.1), 3)
 
 
 def _normalize_renders_url(url: str) -> str:
@@ -91,7 +97,8 @@ def _normalize_template_id(value: str) -> str:
 def _build_service_local_payload(
     script: Script, 
     image_urls: list[str], 
-    voice_url: str
+    voice_url: str,
+    voice_duration: float | None = None,
 ) -> dict[str, Any]:
     """
     Template 1: Service / Local Business (Quick Promo)
@@ -99,8 +106,9 @@ def _build_service_local_payload(
     """
     text_1_content = script.scenes[0].text if script.scenes else "Discover Our Services"
     text_2_content = " ".join([s.text for s in script.scenes[1:]]) if len(script.scenes) > 1 else text_1_content
+    text_3_content = " ".join([s.text for s in script.scenes[2:]]) if len(script.scenes) > 2 else text_2_content
 
-    return {
+    modifications: dict[str, Any] = {
         "Audio": voice_url,
         "Audio.source": voice_url,
         "Voiceover": voice_url,
@@ -108,13 +116,23 @@ def _build_service_local_payload(
         "Video": image_urls[0] if image_urls else "https://creatomate.com/files/assets/7347c3b7-e1a8-4439-96f1-f3dfc95c3d28",
         "Text-1": text_1_content,
         "Text-2": text_2_content,
+        "Text-3": text_3_content,
     }
+    if voice_duration:
+        modifications.update({
+            "duration": voice_duration,
+            "Audio.duration": voice_duration,
+            "Voiceover.duration": voice_duration,
+            "Video.duration": voice_duration,
+        })
+    return modifications
 
 
 def _build_news_showcase_payload(
     script: Script, 
     image_urls: list[str], 
-    voice_url: str
+    voice_url: str,
+    voice_duration: float | None = None,
 ) -> dict[str, Any]:
     """
     Template 2: News / Multi-Scene Highlight (0c177ed9-ee0b-46fb-b26b-36737d8cc738)
@@ -137,6 +155,21 @@ def _build_news_showcase_payload(
         modifications[f"Image-{n}.source"] = img_src
         modifications[f"Text-{n}.text"] = scene_text
 
+    if voice_duration:
+        scene_duration = round(voice_duration / 3, 3)
+        modifications.update({
+            "duration": voice_duration,
+            "Audio.duration": voice_duration,
+            "Voiceover.duration": voice_duration,
+        })
+        for i in range(3):
+            n = i + 1
+            scene_time = round(i * scene_duration, 3)
+            modifications[f"Image-{n}.time"] = scene_time
+            modifications[f"Image-{n}.duration"] = scene_duration
+            modifications[f"Text-{n}.time"] = scene_time
+            modifications[f"Text-{n}.duration"] = scene_duration
+
     return modifications
 
 
@@ -145,7 +178,8 @@ def _build_ecommerce_payload(
     script: Script, 
     image_urls: list[str], 
     voice_url: str,
-    assets: Optional[BrandAssets] = None
+    assets: Optional[BrandAssets] = None,
+    voice_duration: float | None = None,
 ) -> dict[str, Any]:
     """
     Template 3: Product / E-commerce Highlight
@@ -156,7 +190,7 @@ def _build_ecommerce_payload(
     cta_text = script.scenes[-1].text if len(script.scenes) > 1 else "Shop Today!"
     site_name = assets.site_title if assets and assets.site_title else "Featured Product"
 
-    return {
+    modifications: dict[str, Any] = {
         "Audio": voice_url,
         "Audio.source": voice_url,
         "Voiceover": voice_url,
@@ -169,6 +203,19 @@ def _build_ecommerce_payload(
         "CTA.text": cta_text,
         "Website.text": site_name.lower().replace(" ", "") + ".com"
     }
+    if voice_duration:
+        scene_duration = round(voice_duration / 2, 3)
+        modifications.update({
+            "duration": voice_duration,
+            "Audio.duration": voice_duration,
+            "Voiceover.duration": voice_duration,
+            "Product-Image.duration": voice_duration,
+            "Product-Description.time": 0,
+            "Product-Description.duration": scene_duration,
+            "CTA.time": scene_duration,
+            "CTA.duration": scene_duration,
+        })
+    return modifications
 
 
 # ==============================================================================
@@ -180,7 +227,8 @@ def _build_template_payload(
     image_urls: list[str], 
     voice_url: str,
     template_id: Optional[str] = None,
-    assets: Optional[BrandAssets] = None
+    assets: Optional[BrandAssets] = None,
+    voice_duration: float | None = None,
 ) -> dict[str, Any]:
     """
     Routes render payloads to the exact schema required by each Creatomate template.
@@ -195,14 +243,20 @@ def _build_template_payload(
 
     # 2. Route to specialized payload generator
     if active_template == TEMPLATES["news_showcase"]["id"]:
-        modifications = _build_news_showcase_payload(script, image_urls, voice_url)
+        modifications = _build_news_showcase_payload(
+            script, image_urls, voice_url, voice_duration
+        )
 
     elif active_template == TEMPLATES["product"]["id"]:
-        modifications = _build_ecommerce_payload(script, image_urls, voice_url, assets)
+        modifications = _build_ecommerce_payload(
+            script, image_urls, voice_url, assets, voice_duration
+        )
 
     else:
         # Default: Service / Local Business
-        modifications = _build_service_local_payload(script, image_urls, voice_url)
+        modifications = _build_service_local_payload(
+            script, image_urls, voice_url, voice_duration
+        )
 
     return {
         "template_id": active_template,
@@ -213,6 +267,7 @@ def _build_template_payload(
                 "type": "audio",
                 "source": voice_url,
                 "volume": "100%",
+                "duration": voice_duration or "media",
             }
         ],
     }
@@ -226,6 +281,7 @@ async def render_single_template(
     image_urls: list[str],
     template_key: str,
     template_id: str,
+    voice_duration: float | None = None,
 ) -> tuple[str, str]:
     """Renders a single template and uploads its finished video to Supabase."""
     body = _build_template_payload(
@@ -233,7 +289,8 @@ async def render_single_template(
         image_urls=image_urls, 
         voice_url=voice_url, 
         template_id=template_id, 
-        assets=assets
+        assets=assets,
+        voice_duration=voice_duration,
     )
 
     if not VIDEO_API_KEY:
@@ -299,6 +356,7 @@ async def render_all_templates(
             assets=assets,
             script=script,
             voice_url=voice_url,
+            voice_duration=_voice_duration(voice, script),
             image_urls=image_urls,
             template_key=t_key,
             template_id=t_info["id"],
@@ -349,6 +407,7 @@ async def render_templates_sequentially(
                 assets=assets,
                 script=script,
                 voice_url=voice_url,
+                voice_duration=_voice_duration(voice, script),
                 image_urls=image_urls,
                 template_key=template_key,
                 template_id=template["id"],
@@ -359,10 +418,19 @@ async def render_templates_sequentially(
             project.script = script
             project.voice = voice
             project.layers = {
+                **(project.layers or {}),
                 "template_key": template_key,
                 "template_id": template["id"],
                 "required_scenes": template["required_scenes"],
                 "required_images": template["required_images"],
+                "image_urls": image_urls,
+                "voiceover_url": voice_url,
+            }
+            variants = project.layers.setdefault("variants", {})
+            variants[template_key] = {
+                "template_id": template["id"],
+                "script": script.model_dump(mode="json"),
+                "voice": voice.model_dump(mode="json"),
                 "image_urls": image_urls,
                 "voiceover_url": voice_url,
             }
@@ -564,71 +632,147 @@ async def _poll_render(
         await asyncio.sleep(POLL_INTERVAL_SEC)
 
 
+def _load_variant_for_edit(
+    project: VideoProject, template_key: str
+) -> tuple[Script, VoiceResult, list[str]]:
+    """Load independent persisted assets for a template, with a legacy fallback."""
+    if template_key not in TEMPLATES:
+        raise ValueError(f"Unknown template variant: {template_key}")
+
+    variants = (project.layers or {}).get("variants", {})
+    state = variants.get(template_key)
+    if state:
+        return (
+            Script.model_validate(state["script"]),
+            VoiceResult.model_validate(state["voice"]),
+            list(state.get("image_urls") or []),
+        )
+
+    # Projects created before variant state was introduced retain their last script.
+    if project.script and project.voice:
+        image_urls = [scene.image_url for scene in project.script.scenes if scene.image_url]
+        return project.script.model_copy(deep=True), project.voice.model_copy(deep=True), image_urls
+    raise ValueError("This project has no editable render state yet")
+
+
+def _save_variant_state(
+    project: VideoProject,
+    template_key: str,
+    script: Script,
+    voice: VoiceResult,
+    image_urls: list[str],
+    voice_url: str,
+) -> None:
+    """Persist template-specific edit state without overwriting the other variants."""
+    template = TEMPLATES[template_key]
+    layers = project.layers or {}
+    variants = layers.setdefault("variants", {})
+    variants[template_key] = {
+        "template_id": template["id"],
+        "script": script.model_dump(mode="json"),
+        "voice": voice.model_dump(mode="json"),
+        "image_urls": image_urls,
+        "voiceover_url": voice_url,
+    }
+    layers.update({
+        "template_key": template_key,
+        "template_id": template["id"],
+        "image_urls": image_urls,
+        "voiceover_url": voice_url,
+    })
+    project.layers = layers
+    project.script = script
+    project.voice = voice
+
+
+async def _render_edited_variant(
+    project: VideoProject,
+    template_key: str,
+    script: Script,
+    voice: VoiceResult,
+    image_urls: list[str],
+) -> str:
+    if not project.brand_assets:
+        raise ValueError("Cannot render without brand assets")
+    expected_images = TEMPLATES[template_key]["required_images"]
+    if len(image_urls) < expected_images:
+        raise ValueError(f"{template_key} requires {expected_images} image asset(s)")
+
+    raw_voice = voice.full_audio_url or (voice.segments[0].audio_url if voice.segments else None)
+    voice_url = await sanitize_audio_url(raw_voice)
+    if not voice_url:
+        raise RuntimeError("Voiceover synthesis returned no usable audio URL")
+
+    _, preview_url = await render_single_template(
+        project=project,
+        assets=project.brand_assets,
+        script=script,
+        voice_url=voice_url,
+        voice_duration=_voice_duration(voice, script),
+        image_urls=image_urls[:expected_images],
+        template_key=template_key,
+        template_id=TEMPLATES[template_key]["id"],
+    )
+    if not preview_url:
+        raise RuntimeError(f"Failed to render {template_key}")
+
+    _save_variant_state(project, template_key, script, voice, image_urls, voice_url)
+    project.preview_urls = project.preview_urls or {}
+    project.preview_urls[template_key] = preview_url
+    project.preview_url = preview_url
+    project.status = "ready"
+    project.error = None
+    return preview_url
+
+
 async def edit_ad_component(project: VideoProject, req: EditRequest, storage: Storage) -> str:
-    """Perform targeted edits and re-render with flexible layer name mapping."""
+    """Edit and re-render only the selected template variant."""
     target = req.target_layer.strip()
     new_value = req.new_value.strip()
+    if not new_value:
+        raise ValueError("new_value is required")
+    template_key = req.template_key or (project.layers or {}).get("template_key") or "service_local"
+    script, voice, image_urls = _load_variant_for_edit(project, template_key)
 
-    # Flexible matching for image layers (e.g. Image-4, scene_4_image, image_4, scene_4_prompt)
-    image_layer_match = re.search(r"(?:image[_-]?|scene[_-]?(\d+)[_-]?(?:image|prompt)?|(\d+))", target, re.IGNORECASE)
-    
-    scene_idx = None
-    if image_layer_match:
-        digits = [g for g in image_layer_match.groups() if g and g.isdigit()]
-        if digits:
-            scene_idx = int(digits[0]) - 1
+    image_match = re.fullmatch(r"(?:image|scene)[_-]?(\d+)(?:[_-]?(?:image|prompt))?", target, re.IGNORECASE)
+    text_match = re.fullmatch(r"(?:script_line|text)[_-]?(\d+)", target, re.IGNORECASE)
 
-    # 1. Image Edits
-    if scene_idx is not None and project.script and 0 <= scene_idx < len(project.script.scenes):
-        scene = project.script.scenes[scene_idx]
-
-        if new_value.startswith("http://") or new_value.startswith("https://"):
-            scene.image_url = new_value
-            logger.info("Updated Scene %d image URL directly -> %s", scene_idx + 1, new_value)
+    if image_match:
+        index = int(image_match.group(1)) - 1
+        if not 0 <= index < TEMPLATES[template_key]["required_images"]:
+            raise ValueError(f"Image-{index + 1} is not available in {template_key}")
+        if new_value.startswith(("http://", "https://")):
+            image_url = new_value
         else:
-            logger.info("Triggering fal.ai re-generation for Scene %d prompt: %s", scene_idx + 1, new_value)
-            scene.visual_prompt = new_value
             from services.visual_sanitizer import generate_fal_fallback_image
-            new_image_url = await generate_fal_fallback_image(
+            scene = script.scenes[min(index, len(script.scenes) - 1)]
+            scene.visual_prompt = new_value
+            image_url = await generate_fal_fallback_image(
                 prompt=new_value,
                 aspect_ratio=project.aspect_ratio or "16:9",
-                scene_idx=scene_idx,
-                category=project.script.business_category
+                scene_idx=index,
+                category=script.business_category,
             )
-            scene.image_url = new_image_url
+        if not image_url:
+            raise RuntimeError("Image generation did not return an image URL")
+        while len(image_urls) <= index:
+            image_urls.append("")
+        image_urls[index] = image_url
+        script.scenes[min(index, len(script.scenes) - 1)].image_url = image_url
+    elif text_match:
+        index = int(text_match.group(1)) - 1
+        if not 0 <= index < len(script.scenes):
+            raise ValueError(f"Text-{index + 1} is not available in {template_key}")
+        script.scenes[index].text = new_value
+        # New copy needs a new audio file and synced scene timeline.
+        voice = await synthesize_voice_for_script(script, project_id=project.id)
+    else:
+        raise ValueError("Use Image-N for an image or Text-N / script_line_N for a script line")
 
-        project.version += 1
-        storage.save_project(project)
-        return await _trigger_render_sim(project)
-
-    # 2. Script Line Edits
-    text_match = re.search(r"(?:script_line_|text[_-]?)(\d+)", target, re.IGNORECASE)
-    if text_match and project.script:
-        idx = int(text_match.group(1)) - 1
-        if 0 <= idx < len(project.script.scenes):
-            project.script.scenes[idx].text = new_value
-            project.version += 1
-            storage.save_project(project)
-            return await _trigger_render_sim(project)
-
-    # 3. Brand Color Edits
-    if target.lower() in {"brand_color", "primary_color", "color"}:
-        if project.brand_assets:
-            project.brand_assets.primary_color = new_value
-        project.version += 1
-        storage.save_project(project)
-        return await _trigger_render_sim(project)
-
-    # 4. Voiceover Edits
-    if target.lower().startswith("voiceover"):
-        project.version += 1
-        storage.save_project(project)
-        return await _trigger_render_sim(project)
-
-    raise ValueError(
-        f"Unknown target_layer: '{target}'. Supported layer formats include: "
-        "'Image-4', 'scene_4_image', 'scene_4_prompt', 'Text-1', 'script_line_1', 'brand_color', or 'voiceover'."
-    )
+    project.version += 1
+    preview_url = await _render_edited_variant(project, template_key, script, voice, image_urls)
+    storage.save_project(project)
+    return preview_url
 
 
 async def _trigger_render_sim(project: VideoProject) -> str:
