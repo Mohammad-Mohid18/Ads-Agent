@@ -49,7 +49,7 @@ TEMPLATES = {
         "required_scenes": 3,
         "required_images": 3,
     },
-    "product": {
+    "ecommerce": {
         "id": "a248f122-6ecc-4869-9782-75f90890517e",
         "name": "Product / E-commerce",
         "required_scenes": 2,
@@ -57,7 +57,26 @@ TEMPLATES = {
     },
 }
 
+TEMPLATE_ALIASES = {
+    "product": "ecommerce",
+    "e-commerce": "ecommerce",
+}
+
 DEFAULT_TEMPLATE_ID = TEMPLATES["service_local"]["id"]
+
+
+def _get_template_info(key_or_id: str) -> Optional[dict[str, Any]]:
+    """Resolve template metadata by key, alias, or Creatomate UUID."""
+    k = (key_or_id or "").strip()
+    if k in TEMPLATES:
+        return TEMPLATES[k]
+    alias = TEMPLATE_ALIASES.get(k.lower())
+    if alias and alias in TEMPLATES:
+        return TEMPLATES[alias]
+    for t in TEMPLATES.values():
+        if t["id"] == k:
+            return t
+    return None
 
 
 def _voice_duration(voice: VoiceResult, script: Script) -> float:
@@ -234,12 +253,8 @@ def _build_template_payload(
     Routes render payloads to the exact schema required by each Creatomate template.
     """
     # 1. Resolve active template ID
-    active_template = (template_id or "").strip()
-
-    if active_template in TEMPLATES:
-        active_template = TEMPLATES[active_template]["id"]
-    if not active_template:
-        active_template = DEFAULT_TEMPLATE_ID
+    template_info = _get_template_info(template_id or DEFAULT_TEMPLATE_ID)
+    active_template = template_info["id"] if template_info else DEFAULT_TEMPLATE_ID
 
     # 2. Route to specialized payload generator
     if active_template == TEMPLATES["news_showcase"]["id"]:
@@ -247,7 +262,7 @@ def _build_template_payload(
             script, image_urls, voice_url, voice_duration
         )
 
-    elif active_template == TEMPLATES["product"]["id"]:
+    elif active_template == TEMPLATES["ecommerce"]["id"]:
         modifications = _build_ecommerce_payload(
             script, image_urls, voice_url, assets, voice_duration
         )
@@ -636,6 +651,7 @@ def _load_variant_for_edit(
     project: VideoProject, template_key: str
 ) -> tuple[Script, VoiceResult, list[str]]:
     """Load independent persisted assets for a template, with a legacy fallback."""
+    template_key = TEMPLATE_ALIASES.get(template_key.lower(), template_key)
     if template_key not in TEMPLATES:
         raise ValueError(f"Unknown template variant: {template_key}")
 
@@ -664,6 +680,7 @@ def _save_variant_state(
     voice_url: str,
 ) -> None:
     """Persist template-specific edit state without overwriting the other variants."""
+    template_key = TEMPLATE_ALIASES.get(template_key.lower(), template_key)
     template = TEMPLATES[template_key]
     layers = project.layers or {}
     variants = layers.setdefault("variants", {})
@@ -692,6 +709,7 @@ async def _render_edited_variant(
     voice: VoiceResult,
     image_urls: list[str],
 ) -> str:
+    template_key = TEMPLATE_ALIASES.get(template_key.lower(), template_key)
     if not project.brand_assets:
         raise ValueError("Cannot render without brand assets")
     expected_images = TEMPLATES[template_key]["required_images"]
@@ -731,7 +749,8 @@ async def edit_ad_component(project: VideoProject, req: EditRequest, storage: St
     new_value = req.new_value.strip()
     if not new_value:
         raise ValueError("new_value is required")
-    template_key = req.template_key or (project.layers or {}).get("template_key") or "service_local"
+    raw_key = req.template_key or (project.layers or {}).get("template_key") or "service_local"
+    template_key = TEMPLATE_ALIASES.get(raw_key.lower(), raw_key)
     script, voice, image_urls = _load_variant_for_edit(project, template_key)
 
     image_match = re.fullmatch(r"(?:image|scene)[_-]?(\d+)(?:[_-]?(?:image|prompt))?", target, re.IGNORECASE)
@@ -744,15 +763,17 @@ async def edit_ad_component(project: VideoProject, req: EditRequest, storage: St
         if new_value.startswith(("http://", "https://")):
             image_url = new_value
         else:
-            from services.visual_sanitizer import generate_image_with_fallbacks
+            from services.visuals import generate_single_visual
             scene = script.scenes[min(index, len(script.scenes) - 1)]
             scene.visual_prompt = new_value
-            image_url = await generate_image_with_fallbacks(
+            scene.image_prompt = new_value
+            image_url = await generate_single_visual(
                 prompt=new_value,
                 aspect_ratio=project.aspect_ratio or "16:9",
                 scene_idx=index,
                 category=script.business_category,
                 project_id=project.id,
+                assets=project.brand_assets,
             )
         if not image_url:
             raise RuntimeError("Image generation did not return an image URL")

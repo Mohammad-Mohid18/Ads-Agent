@@ -19,6 +19,11 @@ PROJECT_DB = os.path.join(DATA_DIR, "projects.json")
 class BrandAssets(BaseModel):
     site_title: Optional[str] = None
     description: Optional[str] = None
+    business_niche: Optional[str] = None
+    brand_colors: List[str] = Field(default_factory=list)
+    core_services: List[str] = Field(default_factory=list)
+    products: List[str] = Field(default_factory=list)
+    key_visual_elements: List[str] = Field(default_factory=list)
     logo_url: Optional[str] = None
     product_images: List[str] = Field(default_factory=list)
     primary_color: Optional[str] = None
@@ -32,6 +37,7 @@ class Scene(BaseModel):
     role: str = "hook"  # hook/problem/solution/cta
     text: str = ""
     visual_prompt: str = Field(..., min_length=1)  # Must NOT be null
+    image_prompt: Optional[str] = None
     image_url: Optional[str] = None
 
 
@@ -94,8 +100,6 @@ class EditResponse(BaseModel):
     preview_url: Optional[str]
 
 
-# Supabase-backed project storage.  A local JSON file is used only when Supabase
-# has not been configured, which keeps the demo usable without cloud credentials.
 class Storage:
     def __init__(self, path: str = PROJECT_DB, *, supabase_url: Optional[str] = None,
                  supabase_key: Optional[str] = None, table: str = "video_projects"):

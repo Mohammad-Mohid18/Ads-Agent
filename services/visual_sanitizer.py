@@ -1,8 +1,10 @@
 """Validate Creatomate media and generate image fallbacks when assets are broken."""
 from __future__ import annotations
 
+import base64
 import logging
 import os
+import re
 import uuid
 from typing import Optional
 from urllib.parse import quote, urlparse, urlunparse
@@ -19,11 +21,20 @@ logger = logging.getLogger("ai_ad_engine.sanitizer")
 VALID_IMAGE_TYPES = ("image/jpeg", "image/png", "image/webp", "image/jpg")
 VALID_AUDIO_TYPES = ("audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/mp4", "audio/aac")
 
-HF_API_TOKEN = (os.getenv("HF_API_TOKEN") or "").strip()
-HF_MODEL_URL = os.getenv(
-    "HF_MODEL_URL",
-    "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell",
-).strip()
+
+def _normalize_hf_model_url(raw_url: Optional[str]) -> str:
+    """Strip invalid /v1/ routes and whitespace from Hugging Face model inference URLs."""
+    url = (raw_url or "").strip().strip("'\"")
+    if not url:
+        return "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
+    # Convert accidental router /v1/models/ to valid /models/ route
+    url = re.sub(r"/hf-inference/v1/models/", "/hf-inference/models/", url)
+    url = re.sub(r"/v1/models/", "/models/", url)
+    return url
+
+
+HF_API_TOKEN = (os.getenv("HF_API_TOKEN") or "").strip().strip("'\"")
+HF_MODEL_URL = _normalize_hf_model_url(os.getenv("HF_MODEL_URL"))
 
 
 def clean_asset_url(url: Optional[str]) -> Optional[str]:
@@ -107,27 +118,91 @@ def _content_type_ok(content_type: Optional[str], allowed: tuple[str, ...]) -> b
     ct = (content_type or "").lower()
     return any(vt in ct for vt in allowed)
 
+NICHE_PEXELS_KEYWORDS = {
+    "Software & Technology": ["coding software technology", "software developer programming", "modern tech workspace", "computer software engineer"],
+    "SaaS & Cloud Technology": ["cloud software technology", "modern tech office developers", "data analytics software", "tech startup coding"],
+    "HVAC & Climate Control": ["hvac technician repair", "air conditioning maintenance", "heating cooling technician", "modern home air condition"],
+    "Luxury Real Estate": ["luxury modern villa", "contemporary home architecture", "luxury house interior", "modern real estate villa"],
+    "Artisan Coffee Shop & Roastery": ["coffee shop barista", "specialty coffee espresso", "artisan cafe interior", "coffee roasting cafe"],
+    "Dental Care & Orthodontics": ["modern dental clinic", "dentist patient smile", "dental care professional", "healthy teeth dentistry"],
+    "Plumbing & Rooter Services": ["plumber repairing pipes", "modern bathroom plumbing", "plumbing technician tools", "residential plumber"],
+    "Fitness & Wellness Studio": ["fitness workout athlete", "modern gym training", "personal trainer fitness", "wellness yoga studio"],
+    "Legal Services & Law Practice": ["law firm office", "attorney consultation", "corporate law library", "executive boardroom law"],
+    "Automotive Service & Repair": ["car mechanic repair", "auto detailing vehicle", "automotive garage mechanic", "modern car service bay"],
+    "Restaurant & Culinary Dining": ["gourmet culinary dining", "chef kitchen plating", "restaurant dining ambiance", "fine dining dish"],
+    "Professional Cleaning Services": ["professional cleaning service", "clean modern home housekeeping", "commercial janitorial cleaning", "impeccable clean room"],
+    "Landscaping & Outdoor Design": ["landscaping garden design", "modern lawn care outdoor", "beautiful landscape architecture", "residential garden lawn"],
+    "Construction & Home Remodeling": ["home remodeling construction", "modern kitchen renovation", "architect contractor blueprints", "renovated home interior"],
+    "Veterinary & Pet Care Services": ["veterinarian dog clinic", "animal hospital care", "pet clinic veterinary", "happy dog vet exam"],
+    "Fashion & Apparel Retail": ["fashion apparel boutique", "stylish clothing lifestyle", "modern fashion model", "boutique fashion retail"],
+    "E-Commerce & Digital Retail": ["modern product photography", "premium packaging unboxing", "ecommerce shopping lifestyle", "clean product showcase"],
+}
+
+
+def extract_pexels_search_terms(
+    prompt: str,
+    category: Optional[str] = None,
+    scene_idx: int = 0,
+) -> str:
+    """
+    Extract 2-3 explicit, high-converting keywords matching the business niche / title
+    instead of sending long prompt descriptions or generic phrases to Pexels.
+    """
+    niche = (category or "").strip()
+    
+    # 1. If niche matches curated map, pick rotating niche-specific keyword phrase
+    if niche in NICHE_PEXELS_KEYWORDS:
+        options = NICHE_PEXELS_KEYWORDS[niche]
+        return options[scene_idx % len(options)]
+
+    # 2. Check if any niche key substring matches
+    for n_key, options in NICHE_PEXELS_KEYWORDS.items():
+        if any(w.lower() in niche.lower() or w.lower() in (prompt or "").lower() for w in n_key.split()):
+            return options[scene_idx % len(options)]
+
+    # 3. Detect tech / coding specifically (e.g. Code Club)
+    combined = f"{niche} {prompt}".lower()
+    if any(k in combined for k in ("code", "coding", "software", "developer", "programming", "tech", "web dev", "app")):
+        tech_terms = ["coding software technology", "software developer programming", "modern tech workspace", "computer programmer"]
+        return tech_terms[scene_idx % len(tech_terms)]
+
+    # 4. Extract subject nouns, stripping prompt and photography modifiers
+    clean_q = re.sub(
+        r"(?:photorealistic|8k|4k|resolution|cinematic|lighting|zero text overlay|no text|no typography|no watermark|professional brand photography|highly detailed|establishing shot|close-up shot|wide shot|eye-level shot|commercial business|services|workspace|featuring|illuminated by|accents|clean aesthetic|setting|brand|color|palette)",
+        "",
+        prompt or "",
+        flags=re.IGNORECASE,
+    )
+    clean_q = re.sub(r"[,\.\:\;\(\)\{\}\[\]\"'#\-_/]", " ", clean_q)
+    words = [w.strip() for w in clean_q.split() if len(w.strip()) > 2 and w.lower() not in {"and", "the", "for", "with", "our", "team", "modern", "sleek", "subtle", "rich", "deep", "soft", "warm", "shot"}]
+    
+    if len(words) >= 2:
+        return " ".join(words[:3])
+
+    return niche or "modern technology workspace"
+
+
 async def fetch_pexels_fallback_image(
     prompt: str,
     scene_idx: int = 0,
     category: Optional[str] = None,
     aspect_ratio: str = "16:9",
 ) -> Optional[str]:
-    """Fetch a high-res stock photo from Pexels using scene-specific script keywords."""
+    """Fetch a high-res stock photo from Pexels using explicit business niche keywords."""
     pexels_key = (os.getenv("PEXELS_API_KEY") or "").strip()
     if not pexels_key:
         logger.warning("PEXELS_API_KEY not set in .env")
         return None
 
-    # Construct search query directly from scene visual prompt and category
-    search_query = (prompt or category or "commercial product").strip()
+    # Extract 2-3 clean, explicit search terms matching business niche
+    search_query = extract_pexels_search_terms(prompt, category=category, scene_idx=scene_idx)
     
     orientation = "portrait" if aspect_ratio in {"9:16", "portrait"} else "landscape"
     url = f"https://api.pexels.com/v1/search?query={quote(search_query)}&orientation={orientation}&per_page=15"
     
     headers = {"Authorization": pexels_key}
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=6.0) as client:
             res = await client.get(url, headers=headers)
             if res.status_code == 200:
                 data = res.json()
@@ -146,13 +221,35 @@ async def fetch_pexels_fallback_image(
     return None
 
 
+def get_aspect_ratio_dimensions(aspect_ratio: str) -> tuple[int, int]:
+    """
+    Return valid FLUX/SDXL dimensions (multiples of 64) for any aspect ratio:
+    - 16:9 / landscape -> 1024 x 576
+    - 9:16 / portrait -> 576 x 1024
+    - 1:1 / square -> 1024 x 1024
+    """
+    ar = (aspect_ratio or "16:9").lower().strip()
+    if ar in {"9:16", "portrait", "vertical"}:
+        return 576, 1024
+    elif ar in {"1:1", "square"}:
+        return 1024, 1024
+    return 1024, 576
+
+
 # 2. HUGGING FACE SERVERLESS GENERATION WITH PEXELS + POLLINATIONS FALLBACKS
-def get_pollinations_fallback_image(prompt: str, *, scene_idx: int = 0) -> str:
+def get_pollinations_fallback_image(
+    prompt: str,
+    *,
+    scene_idx: int = 0,
+    aspect_ratio: str = "16:9",
+) -> str:
     """Return a distinct Pollinations image URL when generated or stock media fails."""
     safe_prompt = quote((prompt or "professional commercial product photography").strip())
+    width, height = get_aspect_ratio_dimensions(aspect_ratio)
+
     return (
         f"https://image.pollinations.ai/prompt/{safe_prompt}"
-        f"?width=1280&height=720&nologo=true&seed={scene_idx + 1}"
+        f"?width={width}&height={height}&nologo=true&seed={scene_idx + 1}"
     )
 
 
@@ -178,39 +275,81 @@ async def generate_image_with_fallbacks(
 ) -> str:
     """Generate with Hugging Face, then fall back to Pexels and Pollinations."""
     safe_prompt = prompt or "Professional clean modern business showcase, cinematic lighting"
+    width, height = get_aspect_ratio_dimensions(aspect_ratio)
+
     if HF_API_TOKEN:
+        target_url = _normalize_hf_model_url(HF_MODEL_URL)
         try:
-            async with httpx.AsyncClient(timeout=90.0) as client:
-                response = await client.post(
-                    HF_MODEL_URL,
-                    headers={
-                        "Authorization": f"Bearer {HF_API_TOKEN}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "inputs": safe_prompt,
-                        "parameters": {"width": 1280, "height": 720},
-                    },
+            timeout_cfg = httpx.Timeout(connect=8.0, read=45.0, write=15.0, pool=8.0)
+            headers = {
+                "Authorization": f"Bearer {HF_API_TOKEN}",
+                "Content-Type": "application/json",
+            }
+            # 1. Standard Hugging Face Serverless JSON payload with valid shape parameters
+            payload = {
+                "inputs": safe_prompt,
+                "parameters": {
+                    "width": width,
+                    "height": height,
+                },
+            }
+
+            response: Optional[httpx.Response] = None
+            async with httpx.AsyncClient(timeout=timeout_cfg, follow_redirects=True) as client:
+                response = await client.post(target_url, headers=headers, json=payload)
+                
+                # 2. If 400 Bad Request returned, retry with minimal inputs payload (some HF router endpoints reject parameters)
+                if response.status_code == 400:
+                    logger.warning(
+                        "Hugging Face returned 400 for parametrized payload (%s); retrying with bare inputs",
+                        response.text[:120] if response.text else "unknown",
+                    )
+                    response = await client.post(target_url, headers=headers, json={"inputs": safe_prompt})
+
+            if response is not None and response.status_code == 200:
+                reported_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+                raw_content = response.content
+                content_type = _image_content_type(raw_content, reported_type)
+
+                # Support base64 image responses if returned as JSON
+                if not content_type and ("json" in reported_type or response.text.strip().startswith("{")):
+                    try:
+                        jdata = response.json()
+                        if isinstance(jdata, dict):
+                            if "data" in jdata and isinstance(jdata["data"], list) and jdata["data"]:
+                                b64 = jdata["data"][0].get("b64_json")
+                                if b64:
+                                    raw_content = base64.b64decode(b64)
+                                    content_type = _image_content_type(raw_content, "image/png") or "image/png"
+                            elif "image" in jdata and isinstance(jdata["image"], str):
+                                raw_content = base64.b64decode(jdata["image"])
+                                content_type = _image_content_type(raw_content, "image/png") or "image/png"
+                    except Exception:
+                        pass
+
+                if content_type and raw_content:
+                    extension = {"image/png": "png", "image/webp": "webp"}.get(content_type, "jpg")
+                    object_path = (
+                        f"media/images/{project_id or 'generated'}/"
+                        f"hf_scene_{scene_idx + 1}_{uuid.uuid4().hex[:10]}.{extension}"
+                    )
+                    public_url = await upload_bytes(object_path, raw_content, content_type)
+                    logger.info("Hugging Face generated scene %s and uploaded %s", scene_idx + 1, object_path)
+                    return public_url
+
+            if response is not None and response.status_code != 200:
+                logger.warning(
+                    "Hugging Face returned status=%s for scene %s (%s); using Pexels fallback",
+                    response.status_code,
+                    scene_idx + 1,
+                    response.text[:120] if response.text else "unknown",
                 )
-            reported_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
-            content_type = _image_content_type(response.content, reported_type)
-            if response.status_code == 200 and content_type and response.content:
-                extension = {"image/png": "png", "image/webp": "webp"}.get(content_type, "jpg")
-                object_path = (
-                    f"media/images/{project_id or 'generated'}/"
-                    f"hf_scene_{scene_idx + 1}_{uuid.uuid4().hex[:10]}.{extension}"
-                )
-                public_url = await upload_bytes(object_path, response.content, content_type)
-                logger.info("Hugging Face generated scene %s and uploaded %s", scene_idx + 1, object_path)
-                return public_url
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError, Exception) as exc:
             logger.warning(
-                "Hugging Face returned status=%s content_type=%s for scene %s; using Pexels fallback",
-                response.status_code,
-                reported_type or "unknown",
+                "Hugging Face request failed for scene %s (%s); using Pexels fallback",
                 scene_idx + 1,
+                exc,
             )
-        except Exception as exc:
-            logger.warning("Hugging Face generation failed for scene %s: %s; using Pexels fallback", scene_idx + 1, exc)
     else:
         logger.warning("HF_API_TOKEN is not configured; using Pexels fallback for scene %s", scene_idx + 1)
 
@@ -223,7 +362,7 @@ async def generate_image_with_fallbacks(
     if pexels_url:
         return pexels_url
 
-    pollinations_url = get_pollinations_fallback_image(safe_prompt, scene_idx=scene_idx)
+    pollinations_url = get_pollinations_fallback_image(safe_prompt, scene_idx=scene_idx, aspect_ratio=aspect_ratio)
     logger.warning("Pexels returned no image; using Pollinations fallback for scene %s", scene_idx + 1)
     return pollinations_url
 
@@ -249,7 +388,7 @@ async def sanitize_scene_visual(
     fresh_url = await generate_image_with_fallbacks(
         visual_prompt, aspect_ratio=aspect_ratio, scene_idx=scene_idx, category=category
     )
-    return clean_asset_url(fresh_url) or get_pollinations_fallback_image(visual_prompt, scene_idx=scene_idx)
+    return clean_asset_url(fresh_url) or get_pollinations_fallback_image(visual_prompt, scene_idx=scene_idx, aspect_ratio=aspect_ratio)
 
 
 async def sanitize_audio_url(audio_url: Optional[str]) -> str:
@@ -279,7 +418,7 @@ async def sanitize_image_list(
         )
         # Prevent duplicate image reuse across scenes
         if cleaned in seen_urls:
-            cleaned = get_pollinations_fallback_image(prompt, scene_idx=idx)
+            cleaned = get_pollinations_fallback_image(prompt, scene_idx=idx, aspect_ratio=aspect_ratio)
         seen_urls.add(cleaned)
         out.append(cleaned)
         logger.info("Sanitized Image-%s -> %s", idx + 1, cleaned[:140])
