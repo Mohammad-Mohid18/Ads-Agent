@@ -38,19 +38,19 @@ POLL_TIMEOUT_SEC = float(os.getenv("CREATOMATE_POLL_TIMEOUT", "300"))
 
 TEMPLATES = {
     "service_local": {
-        "id": "6a2c63d6-178b-4b00-8a19-6dc93251ce5e",
+        "id": "ebf14e6b-1a6d-42bb-a399-43b3bbe37f50",
         "name": "Service / Local Business",
-        "required_scenes": 3,
+        "required_scenes": 2,
         "required_images": 1,
     },
     "news_showcase": {
-        "id": "0c177ed9-ee0b-46fb-b26b-36737d8cc738",
+        "id": "317358c6-9011-42f7-9c7d-ac619abddf7b",
         "name": "News / Multi-Scene Highlight",
         "required_scenes": 3,
         "required_images": 3,
     },
     "ecommerce": {
-        "id": "a248f122-6ecc-4869-9782-75f90890517e",
+        "id": "45dd8b71-67f4-42f1-8179-16e517315f38",
         "name": "Product / E-commerce",
         "required_scenes": 2,
         "required_images": 1,
@@ -125,7 +125,6 @@ def _build_service_local_payload(
     """
     text_1_content = script.scenes[0].text if script.scenes else "Discover Our Services"
     text_2_content = " ".join([s.text for s in script.scenes[1:]]) if len(script.scenes) > 1 else text_1_content
-    text_3_content = " ".join([s.text for s in script.scenes[2:]]) if len(script.scenes) > 2 else text_2_content
 
     modifications: dict[str, Any] = {
         "Audio": voice_url,
@@ -135,7 +134,6 @@ def _build_service_local_payload(
         "Video": image_urls[0] if image_urls else "https://creatomate.com/files/assets/7347c3b7-e1a8-4439-96f1-f3dfc95c3d28",
         "Text-1": text_1_content,
         "Text-2": text_2_content,
-        "Text-3": text_3_content,
     }
     if voice_duration:
         modifications.update({
