@@ -12,7 +12,7 @@ logger = logging.getLogger("ai_ad_engine.llm")
 
 LLM_API_KEY = os.getenv("OPENROUTER_API_KEY")
 LLM_API_URL = os.getenv("LLM_API_URL", "https://openrouter.ai/api/v1/chat/completions")
-LLM_MODEL = (os.getenv("OPENROUTER_MODEL") or "meta-llama/llama-3.3-70b-instruct:free").strip().strip("'\"")
+LLM_MODEL = (os.getenv("OPENROUTER_MODEL") or "openrouter/free").strip().strip("'\"")
 
 
 def _clean_text(text: str) -> str:
@@ -193,43 +193,88 @@ async def generate_script(
     """Generate an ad script with exact scene count, voiceover lines, and tailored image prompts."""
     if required_scenes is not None and required_scenes < 1:
         raise ValueError("required_scenes must be at least 1")
-    if not LLM_API_KEY:
+    
+    # Sanitize environment variables
+    api_key = (LLM_API_KEY or "").strip().strip("'\"")
+    api_url = (LLM_API_URL or "https://openrouter.ai/api/v1/chat/completions").strip().strip("'\"")
+    model_name = (LLM_MODEL or "openrouter/free").strip().strip("'\"")
+
+    if not api_key:
         logger.warning("LLM_API_KEY not set; generating heuristic script")
         return _heuristic_script(assets, required_scenes=required_scenes)
 
     prompt = _build_prompt(assets, aspect_ratio, required_scenes=required_scenes)
-    headers = {"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"}
+
+    # Required headers for OpenRouter API requests
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "HTTP-Referer": "http://localhost:8000",
+        "X-Title": "AI Video Ad Generator",
+        "Content-Type": "application/json",
+    }
+    
     body = {
-        "model": LLM_MODEL,
+        "model": model_name,
+        "response_format": {"type": "json_object"},  # Forces strict valid JSON output
         "messages": [
             {
                 "role": "system",
                 "content": (
-                    "You are an expert commercial advertising director and AI visual prompt designer. "
-                    "Always output strict, valid JSON with voiceover text and hyper-detailed photorealistic image prompts."
+                    "You are an expert commercial advertising director. "
+                    "Output ONLY strict, valid JSON matching the requested schema. "
+                    "Keep visual descriptions detailed yet concise to ensure complete JSON output."
                 ),
             },
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.25,
-        "max_tokens": 1000,
+        "max_tokens": 2000,  # Increased from 1000 to prevent text truncation
     }
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.post(LLM_API_URL, headers=headers, json=body)
+            r = await client.post(api_url, headers=headers, json=body)
+            if r.status_code != 200:
+                logger.error("LLM API returned error status %d: %s", r.status_code, r.text[:300])
             r.raise_for_status()
             j = r.json()
 
         content = j.get("choices", [])[0].get("message", {}).get("content", "")
 
+        # Validate that we received actual content
+        if not content or not content.strip():
+            logger.error(
+                "LLM returned empty content. Full API response: %s",
+                json.dumps(j, indent=2)[:2000],
+            )
+            raise ValueError("LLM returned empty response content")
+
+        # Strip markdown triple backticks (```json ... ```) cleanly
         if "```" in content:
-            content = content.split("```")[1]
+            parts = content.split("```")
+            content = parts[1] if len(parts) > 1 else ""
             if content.startswith("json"):
-                content = content[4:]
+                content = content[4:].lstrip()
         content = content.strip()
 
-        parsed = json.loads(content)
+        # Validate content is not empty after stripping
+        if not content:
+            logger.error(
+                "LLM content empty after stripping markdown. Original response had %d chars",
+                len(j.get("choices", [])[0].get("message", {}).get("content", "")),
+            )
+            raise ValueError("LLM response content became empty after markdown stripping")
+
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError as json_err:
+            logger.error(
+                "JSON decode error at line %s column %s - Truncated LLM output (first 1000 chars): %s...",
+                json_err.lineno,
+                json_err.colno,
+                content[:1000],
+            )
+            raise
         business_category = parsed.get("business_category", "").strip() or infer_business_category(assets)
 
         scenes = []

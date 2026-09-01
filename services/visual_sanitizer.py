@@ -26,7 +26,7 @@ def _normalize_hf_model_url(raw_url: Optional[str]) -> str:
     """Strip invalid /v1/ routes and whitespace from Hugging Face model inference URLs."""
     url = (raw_url or "").strip().strip("'\"")
     if not url:
-        return "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
+        return "https://router.huggingface.co/hf-inference/v1/models/stabilityai/stable-diffusion-xl-base-1.0"
     # Convert accidental router /v1/models/ to valid /models/ route
     url = re.sub(r"/hf-inference/v1/models/", "/hf-inference/models/", url)
     url = re.sub(r"/v1/models/", "/models/", url)
@@ -273,12 +273,16 @@ async def generate_image_with_fallbacks(
     category: Optional[str] = None,
     project_id: Optional[str] = None,
 ) -> str:
-    """Generate with Hugging Face, then fall back to Pexels and Pollinations."""
+    """Generate with Hugging Face (primary + fallback URLs), then fall back to Pexels and Pollinations."""
     safe_prompt = prompt or "Professional clean modern business showcase, cinematic lighting"
     width, height = get_aspect_ratio_dimensions(aspect_ratio)
 
     if HF_API_TOKEN:
-        target_url = _normalize_hf_model_url(HF_MODEL_URL)
+        # Import the fallback URL from visuals module
+        from services.visuals import HF_FALLBACK_URL
+        
+        primary_url = _normalize_hf_model_url(HF_MODEL_URL)
+        fallback_url = _normalize_hf_model_url(HF_FALLBACK_URL)
         try:
             timeout_cfg = httpx.Timeout(connect=8.0, read=45.0, write=15.0, pool=8.0)
             headers = {
@@ -296,7 +300,7 @@ async def generate_image_with_fallbacks(
 
             response: Optional[httpx.Response] = None
             async with httpx.AsyncClient(timeout=timeout_cfg, follow_redirects=True) as client:
-                response = await client.post(target_url, headers=headers, json=payload)
+                response = await client.post(primary_url, headers=headers, json=payload)
                 
                 # 2. If 400 Bad Request returned, retry with minimal inputs payload (some HF router endpoints reject parameters)
                 if response.status_code == 400:
@@ -304,7 +308,22 @@ async def generate_image_with_fallbacks(
                         "Hugging Face returned 400 for parametrized payload (%s); retrying with bare inputs",
                         response.text[:120] if response.text else "unknown",
                     )
-                    response = await client.post(target_url, headers=headers, json={"inputs": safe_prompt})
+                    response = await client.post(primary_url, headers=headers, json={"inputs": safe_prompt})
+                
+                # 3. If 410 Deprecated or other non-200 from primary, retry with fallback URL
+                if response.status_code in (410, 503, 502):
+                    logger.warning(
+                        "Hugging Face primary URL returned status %s; retrying with fallback URL",
+                        response.status_code,
+                    )
+                    response = await client.post(fallback_url, headers=headers, json=payload)
+                    
+                    # If 400 on fallback, retry with bare inputs
+                    if response.status_code == 400:
+                        logger.warning(
+                            "Fallback URL returned 400; retrying with bare inputs"
+                        )
+                        response = await client.post(fallback_url, headers=headers, json={"inputs": safe_prompt})
 
             if response is not None and response.status_code == 200:
                 reported_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
@@ -339,7 +358,7 @@ async def generate_image_with_fallbacks(
 
             if response is not None and response.status_code != 200:
                 logger.warning(
-                    "Hugging Face returned status=%s for scene %s (%s); using Pexels fallback",
+                    "Hugging Face (primary and fallback) returned status=%s for scene %s (%s); using Pexels fallback",
                     response.status_code,
                     scene_idx + 1,
                     response.text[:120] if response.text else "unknown",

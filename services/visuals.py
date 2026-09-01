@@ -8,20 +8,29 @@ from models import BrandAssets, Script
 from services.asset_storage import download_url_bytes, upload_bytes
 from services.llm_script import format_natural_color_palette, infer_business_category
 from services.visual_sanitizer import (
-    _normalize_hf_model_url,
     clean_asset_url,
     generate_image_with_fallbacks,
-    get_aspect_ratio_dimensions,
     get_pollinations_fallback_image,
 )
 
 logger = logging.getLogger("ai_ad_engine.visuals")
 
 HF_API_TOKEN = (os.getenv("HF_API_TOKEN") or "").strip().strip("'\"")
-HF_MODEL_URL = _normalize_hf_model_url(
-    os.getenv("HF_MODEL_URL")
-    or "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
-)
+
+# Clean the environment variable explicitly
+raw_url = (os.getenv("HF_MODEL_URL") or "").strip().strip('"').strip("'")
+
+# Primary active endpoint via Together provider on HF Router
+HF_MODEL_URL = os.getenv(
+    "HF_MODEL_URL", 
+    "https://router.huggingface.co/together/v1/models/black-forest-labs/FLUX.1-schnell"
+).strip()
+
+# Explicitly define HF_FALLBACK_URL to fix the import error
+HF_FALLBACK_URL = os.getenv(
+    "HF_FALLBACK_URL",
+    "https://router.huggingface.co/hf-inference/v1/models/stabilityai/stable-diffusion-xl-base-1.0"
+).strip()
 
 QUALITY_ANCHORS = ", highly detailed, photorealistic, professional brand photography, 8k resolution"
 NEGATIVE_ANCHORS = ", zero text overlay, no typography, no watermark, no logo text"
@@ -67,6 +76,7 @@ def build_image_prompt(
     base_prompt = re.sub(r"\s+", " ", base_prompt).strip(" ,")
     return base_prompt
 
+
 async def generate_single_visual(
     prompt: str,
     *,
@@ -78,8 +88,9 @@ async def generate_single_visual(
     assets: Optional[BrandAssets] = None,
 ) -> str:
     """
-    Generate a single visual using the LLM-generated image_prompt with robust 
-    HF -> Pexels -> Pollinations fallback handling and optional Supabase caching.
+    Generate a single visual using the LLM-generated image_prompt.
+    Directs to Hugging Face Serverless (FLUX.1-schnell / SDXL) with quality anchors,
+    and falls back gracefully to Pexels and Pollinations.ai with the same tailored brand prompt.
     """
     full_prompt = build_image_prompt(prompt, assets=assets, business_category=category)
     logger.info(
@@ -108,21 +119,19 @@ async def generate_single_visual(
         )
 
     # Cache freshly generated image to Supabase if requested
-    if cache_to_supabase and safe_url and safe_url.startswith("http") and "supabase.co" not in safe_url:
+    if cache_to_supabase and safe_url.startswith("http") and "supabase.co" not in safe_url:
         try:
             data = await download_url_bytes(safe_url)
-            if data:
-                content_type = "image/jpeg"
-                lower = safe_url.lower()
-                if ".png" in lower:
-                    content_type = "image/png"
-                elif ".webp" in lower:
-                    content_type = "image/webp"
-
-                object_path = (
-                    f"media/images/{project_id or 'generated'}/scene_{scene_idx + 1}_{uuid.uuid4().hex[:8]}.jpg"
-                )
-                safe_url = await upload_bytes(object_path, data, content_type)
+            content_type = "image/jpeg"
+            lower = safe_url.lower()
+            if ".png" in lower:
+                content_type = "image/png"
+            elif ".webp" in lower:
+                content_type = "image/webp"
+            object_path = (
+                f"media/images/{project_id or 'generated'}/scene_{scene_idx + 1}_{uuid.uuid4().hex[:8]}.jpg"
+            )
+            safe_url = await upload_bytes(object_path, data, content_type)
         except Exception as exc:
             logger.warning(
                 "Supabase image cache failed for scene %s; using source URL: %s",
