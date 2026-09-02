@@ -22,21 +22,6 @@ VALID_IMAGE_TYPES = ("image/jpeg", "image/png", "image/webp", "image/jpg")
 VALID_AUDIO_TYPES = ("audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/mp4", "audio/aac")
 
 
-def _normalize_hf_model_url(raw_url: Optional[str]) -> str:
-    """Strip invalid /v1/ routes and whitespace from Hugging Face model inference URLs."""
-    url = (raw_url or "").strip().strip("'\"")
-    if not url:
-        return "https://router.huggingface.co/hf-inference/v1/models/stabilityai/stable-diffusion-xl-base-1.0"
-    # Convert accidental router /v1/models/ to valid /models/ route
-    url = re.sub(r"/hf-inference/v1/models/", "/hf-inference/models/", url)
-    url = re.sub(r"/v1/models/", "/models/", url)
-    return url
-
-
-HF_API_TOKEN = (os.getenv("HF_API_TOKEN") or "").strip().strip("'\"")
-HF_MODEL_URL = _normalize_hf_model_url(os.getenv("HF_MODEL_URL"))
-
-
 def clean_asset_url(url: Optional[str]) -> Optional[str]:
     """
     Normalize URLs for Creatomate:
@@ -49,7 +34,6 @@ def clean_asset_url(url: Optional[str]) -> Optional[str]:
     if not url.startswith(("http://", "https://")):
         return None
 
-    # Supabase signed -> public (Creatomate cannot use long ?token= signed links)
     if "supabase.co" in url and "/storage/v1/object/sign/" in url:
         url = url.replace("/storage/v1/object/sign/", "/storage/v1/object/public/", 1)
 
@@ -79,14 +63,12 @@ async def is_valid_creatomate_image(image_url: Optional[str]) -> bool:
             if response.status_code >= 400 or not _content_type_ok(
                 response.headers.get("Content-Type"), VALID_IMAGE_TYPES
             ):
-                # Some CDNs reject HEAD — fall back to a ranged GET.
                 response = await client.get(url, headers={"Range": "bytes=0-1023"})
             if response.status_code >= 400:
                 return False
             content_type = (response.headers.get("Content-Type") or "").lower()
             if _content_type_ok(content_type, VALID_IMAGE_TYPES):
                 return True
-            # Accept extension-based images when CDNs omit Content-Type.
             path = urlparse(url).path.lower()
             return path.endswith((".jpg", ".jpeg", ".png", ".webp"))
     except Exception as exc:
@@ -118,6 +100,7 @@ def _content_type_ok(content_type: Optional[str], allowed: tuple[str, ...]) -> b
     ct = (content_type or "").lower()
     return any(vt in ct for vt in allowed)
 
+
 NICHE_PEXELS_KEYWORDS = {
     "Software & Technology": ["coding software technology", "software developer programming", "modern tech workspace", "computer software engineer"],
     "SaaS & Cloud Technology": ["cloud software technology", "modern tech office developers", "data analytics software", "tech startup coding"],
@@ -144,29 +127,21 @@ def extract_pexels_search_terms(
     category: Optional[str] = None,
     scene_idx: int = 0,
 ) -> str:
-    """
-    Extract 2-3 explicit, high-converting keywords matching the business niche / title
-    instead of sending long prompt descriptions or generic phrases to Pexels.
-    """
     niche = (category or "").strip()
     
-    # 1. If niche matches curated map, pick rotating niche-specific keyword phrase
     if niche in NICHE_PEXELS_KEYWORDS:
         options = NICHE_PEXELS_KEYWORDS[niche]
         return options[scene_idx % len(options)]
 
-    # 2. Check if any niche key substring matches
     for n_key, options in NICHE_PEXELS_KEYWORDS.items():
         if any(w.lower() in niche.lower() or w.lower() in (prompt or "").lower() for w in n_key.split()):
             return options[scene_idx % len(options)]
 
-    # 3. Detect tech / coding specifically (e.g. Code Club)
     combined = f"{niche} {prompt}".lower()
     if any(k in combined for k in ("code", "coding", "software", "developer", "programming", "tech", "web dev", "app")):
         tech_terms = ["coding software technology", "software developer programming", "modern tech workspace", "computer programmer"]
         return tech_terms[scene_idx % len(tech_terms)]
 
-    # 4. Extract subject nouns, stripping prompt and photography modifiers
     clean_q = re.sub(
         r"(?:photorealistic|8k|4k|resolution|cinematic|lighting|zero text overlay|no text|no typography|no watermark|professional brand photography|highly detailed|establishing shot|close-up shot|wide shot|eye-level shot|commercial business|services|workspace|featuring|illuminated by|accents|clean aesthetic|setting|brand|color|palette)",
         "",
@@ -188,15 +163,12 @@ async def fetch_pexels_fallback_image(
     category: Optional[str] = None,
     aspect_ratio: str = "16:9",
 ) -> Optional[str]:
-    """Fetch a high-res stock photo from Pexels using explicit business niche keywords."""
     pexels_key = (os.getenv("PEXELS_API_KEY") or "").strip()
     if not pexels_key:
         logger.warning("PEXELS_API_KEY not set in .env")
         return None
 
-    # Extract 2-3 clean, explicit search terms matching business niche
     search_query = extract_pexels_search_terms(prompt, category=category, scene_idx=scene_idx)
-    
     orientation = "portrait" if aspect_ratio in {"9:16", "portrait"} else "landscape"
     url = f"https://api.pexels.com/v1/search?query={quote(search_query)}&orientation={orientation}&per_page=15"
     
@@ -208,7 +180,6 @@ async def fetch_pexels_fallback_image(
                 data = res.json()
                 photos = data.get("photos", [])
                 if photos:
-                    # Pick unique photo matching scene index
                     photo = photos[scene_idx % len(photos)]
                     selected_url = photo["src"]["large2x"]
                     logger.info("Pexels fetched image for query '%s' (Scene %d): %s", search_query, scene_idx + 1, selected_url[:80])
@@ -222,12 +193,6 @@ async def fetch_pexels_fallback_image(
 
 
 def get_aspect_ratio_dimensions(aspect_ratio: str) -> tuple[int, int]:
-    """
-    Return valid FLUX/SDXL dimensions (multiples of 64) for any aspect ratio:
-    - 16:9 / landscape -> 1024 x 576
-    - 9:16 / portrait -> 576 x 1024
-    - 1:1 / square -> 1024 x 1024
-    """
     ar = (aspect_ratio or "16:9").lower().strip()
     if ar in {"9:16", "portrait", "vertical"}:
         return 576, 1024
@@ -236,33 +201,67 @@ def get_aspect_ratio_dimensions(aspect_ratio: str) -> tuple[int, int]:
     return 1024, 576
 
 
-# 2. HUGGING FACE SERVERLESS GENERATION WITH PEXELS + POLLINATIONS FALLBACKS
-def get_pollinations_fallback_image(
+def get_pollinations_fallback_url(
     prompt: str,
     *,
     scene_idx: int = 0,
     aspect_ratio: str = "16:9",
 ) -> str:
-    """Return a distinct Pollinations image URL when generated or stock media fails."""
-    safe_prompt = quote((prompt or "professional commercial product photography").strip())
+    """Constructs a direct Pollinations URL with commercial ad prompt modifiers."""
+    enhanced = (
+        f"Professional advertisement photography, {prompt.strip()}, "
+        f"hyperrealistic, 8k resolution, studio commercial lighting, no text, no watermark"
+    )
+    safe_prompt = quote(enhanced)
     width, height = get_aspect_ratio_dimensions(aspect_ratio)
 
     return (
         f"https://image.pollinations.ai/prompt/{safe_prompt}"
-        f"?width={width}&height={height}&nologo=true&seed={scene_idx + 1}"
+        f"?width={width}&height={height}&model=flux&nologo=true&enhance=true&seed={scene_idx + 1}"
     )
 
 
-def _image_content_type(content: bytes, reported_type: str) -> Optional[str]:
-    """Accept Hugging Face image bytes even when its response omits a MIME type."""
-    if reported_type.startswith("image/"):
-        return reported_type
-    if content.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if content.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
-        return "image/webp"
+async def generate_image_pollinations(
+    prompt: str,
+    aspect_ratio: str = "16:9",
+    scene_idx: int = 0,
+    project_id: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Primary Generator: Fetches FLUX-generated visual bytes from Pollinations AI
+    and uploads them directly to Supabase storage to give Creatomate permanent CDN access.
+    """
+    enhanced_prompt = (
+        f"High quality advertisement photography of {prompt.strip()}, "
+        f"hyperrealistic 8k, cinematic lighting, sharp focus, commercial studio quality, no text or logo"
+    )
+    encoded_prompt = quote(enhanced_prompt)
+    width, height = get_aspect_ratio_dimensions(aspect_ratio)
+    
+    pollinations_api_url = (
+        f"https://image.pollinations.ai/prompt/{encoded_prompt}"
+        f"?width={width}&height={height}&model=flux&nologo=true&enhance=true&seed={scene_idx + 10}"
+    )
+
+    try:
+        logger.info("Generating Pollinations AI (FLUX) image for scene %d...", scene_idx + 1)
+        async with httpx.AsyncClient(timeout=35.0, follow_redirects=True) as client:
+            res = await client.get(pollinations_api_url)
+            
+            if res.status_code == 200 and len(res.content) > 2000:
+                object_path = (
+                    f"media/images/{project_id or 'generated'}/"
+                    f"pollination_scene_{scene_idx + 1}_{uuid.uuid4().hex[:10]}.png"
+                )
+                # Upload raw PNG bytes to Supabase Storage
+                public_url = await upload_bytes(object_path, res.content, "image/png")
+                logger.info("Pollinations AI generated scene %d -> Uploaded: %s", scene_idx + 1, public_url)
+                return public_url
+            else:
+                logger.warning("Pollinations HTTP status %d or empty payload for scene %d", res.status_code, scene_idx + 1)
+    except Exception as exc:
+        logger.warning("Pollinations AI request failed for scene %d: %s", scene_idx + 1, exc)
+
     return None
 
 
@@ -273,117 +272,32 @@ async def generate_image_with_fallbacks(
     category: Optional[str] = None,
     project_id: Optional[str] = None,
 ) -> str:
-    """Generate with Hugging Face (primary + fallback URLs), then fall back to Pexels and Pollinations."""
+    """
+    Fallback Chain:
+    1. Pollinations.ai (FLUX) -> Saves to Supabase Storage
+    2. Pexels API Stock Images
+    3. Direct Pollinations URL fallback
+    """
     safe_prompt = prompt or "Professional clean modern business showcase, cinematic lighting"
-    width, height = get_aspect_ratio_dimensions(aspect_ratio)
 
-    if HF_API_TOKEN:
-        # Import the fallback URL from visuals module
-        from services.visuals import HF_FALLBACK_URL
-        
-        primary_url = _normalize_hf_model_url(HF_MODEL_URL)
-        fallback_url = _normalize_hf_model_url(HF_FALLBACK_URL)
-        try:
-            timeout_cfg = httpx.Timeout(connect=8.0, read=45.0, write=15.0, pool=8.0)
-            headers = {
-                "Authorization": f"Bearer {HF_API_TOKEN}",
-                "Content-Type": "application/json",
-            }
-            # 1. Standard Hugging Face Serverless JSON payload with valid shape parameters
-            payload = {
-                "inputs": safe_prompt,
-                "parameters": {
-                    "width": width,
-                    "height": height,
-                },
-            }
+    # 1. Primary: Pollinations FLUX Engine
+    pollinations_url = await generate_image_pollinations(
+        safe_prompt, aspect_ratio=aspect_ratio, scene_idx=scene_idx, project_id=project_id
+    )
+    if pollinations_url:
+        return pollinations_url
 
-            response: Optional[httpx.Response] = None
-            async with httpx.AsyncClient(timeout=timeout_cfg, follow_redirects=True) as client:
-                response = await client.post(primary_url, headers=headers, json=payload)
-                
-                # 2. If 400 Bad Request returned, retry with minimal inputs payload (some HF router endpoints reject parameters)
-                if response.status_code == 400:
-                    logger.warning(
-                        "Hugging Face returned 400 for parametrized payload (%s); retrying with bare inputs",
-                        response.text[:120] if response.text else "unknown",
-                    )
-                    response = await client.post(primary_url, headers=headers, json={"inputs": safe_prompt})
-                
-                # 3. If 410 Deprecated or other non-200 from primary, retry with fallback URL
-                if response.status_code in (410, 503, 502):
-                    logger.warning(
-                        "Hugging Face primary URL returned status %s; retrying with fallback URL",
-                        response.status_code,
-                    )
-                    response = await client.post(fallback_url, headers=headers, json=payload)
-                    
-                    # If 400 on fallback, retry with bare inputs
-                    if response.status_code == 400:
-                        logger.warning(
-                            "Fallback URL returned 400; retrying with bare inputs"
-                        )
-                        response = await client.post(fallback_url, headers=headers, json={"inputs": safe_prompt})
-
-            if response is not None and response.status_code == 200:
-                reported_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
-                raw_content = response.content
-                content_type = _image_content_type(raw_content, reported_type)
-
-                # Support base64 image responses if returned as JSON
-                if not content_type and ("json" in reported_type or response.text.strip().startswith("{")):
-                    try:
-                        jdata = response.json()
-                        if isinstance(jdata, dict):
-                            if "data" in jdata and isinstance(jdata["data"], list) and jdata["data"]:
-                                b64 = jdata["data"][0].get("b64_json")
-                                if b64:
-                                    raw_content = base64.b64decode(b64)
-                                    content_type = _image_content_type(raw_content, "image/png") or "image/png"
-                            elif "image" in jdata and isinstance(jdata["image"], str):
-                                raw_content = base64.b64decode(jdata["image"])
-                                content_type = _image_content_type(raw_content, "image/png") or "image/png"
-                    except Exception:
-                        pass
-
-                if content_type and raw_content:
-                    extension = {"image/png": "png", "image/webp": "webp"}.get(content_type, "jpg")
-                    object_path = (
-                        f"media/images/{project_id or 'generated'}/"
-                        f"hf_scene_{scene_idx + 1}_{uuid.uuid4().hex[:10]}.{extension}"
-                    )
-                    public_url = await upload_bytes(object_path, raw_content, content_type)
-                    logger.info("Hugging Face generated scene %s and uploaded %s", scene_idx + 1, object_path)
-                    return public_url
-
-            if response is not None and response.status_code != 200:
-                logger.warning(
-                    "Hugging Face (primary and fallback) returned status=%s for scene %s (%s); using Pexels fallback",
-                    response.status_code,
-                    scene_idx + 1,
-                    response.text[:120] if response.text else "unknown",
-                )
-        except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError, Exception) as exc:
-            logger.warning(
-                "Hugging Face request failed for scene %s (%s); using Pexels fallback",
-                scene_idx + 1,
-                exc,
-            )
-    else:
-        logger.warning("HF_API_TOKEN is not configured; using Pexels fallback for scene %s", scene_idx + 1)
-
+    # 2. Secondary: Pexels Stock Photos
+    logger.warning("Pollinations storage generation failed; trying Pexels stock photo fallback for scene %d", scene_idx + 1)
     pexels_url = await fetch_pexels_fallback_image(
-        prompt=safe_prompt,
-        scene_idx=scene_idx,
-        category=category,
-        aspect_ratio=aspect_ratio,
+        prompt=safe_prompt, scene_idx=scene_idx, category=category, aspect_ratio=aspect_ratio
     )
     if pexels_url:
         return pexels_url
 
-    pollinations_url = get_pollinations_fallback_image(safe_prompt, scene_idx=scene_idx, aspect_ratio=aspect_ratio)
-    logger.warning("Pexels returned no image; using Pollinations fallback for scene %s", scene_idx + 1)
-    return pollinations_url
+    # 3. Tertiary: Direct Pollinations URL
+    logger.warning("Pexels returned no image; using direct Pollinations URL for scene %d", scene_idx + 1)
+    return get_pollinations_fallback_url(safe_prompt, scene_idx=scene_idx, aspect_ratio=aspect_ratio)
 
 
 async def sanitize_scene_visual(
@@ -394,20 +308,20 @@ async def sanitize_scene_visual(
     scene_idx: int = 0,
     category: Optional[str] = None,
 ) -> str:
-    """Validate an image URL; regenerate via the configured fallback chain if needed."""
+    """Validate an image URL; regenerate via Pollinations if scraping fails or image is broken."""
     candidate = clean_asset_url(scraped_url)
     if candidate and await is_valid_creatomate_image(candidate):
         return candidate
 
     logger.warning(
-        "Scene %s image invalid or damaged (%s). Generating fresh visual.",
+        "Scene %s image invalid or broken (%s). Generating fresh visual.",
         scene_idx + 1,
         (scraped_url or "")[:100],
     )
     fresh_url = await generate_image_with_fallbacks(
         visual_prompt, aspect_ratio=aspect_ratio, scene_idx=scene_idx, category=category
     )
-    return clean_asset_url(fresh_url) or get_pollinations_fallback_image(visual_prompt, scene_idx=scene_idx, aspect_ratio=aspect_ratio)
+    return clean_asset_url(fresh_url) or get_pollinations_fallback_url(visual_prompt, scene_idx=scene_idx, aspect_ratio=aspect_ratio)
 
 
 async def sanitize_audio_url(audio_url: Optional[str]) -> str:
@@ -435,9 +349,8 @@ async def sanitize_image_list(
         cleaned = await sanitize_scene_visual(
             url, prompt, aspect_ratio=aspect_ratio, scene_idx=idx, category=category
         )
-        # Prevent duplicate image reuse across scenes
         if cleaned in seen_urls:
-            cleaned = get_pollinations_fallback_image(prompt, scene_idx=idx, aspect_ratio=aspect_ratio)
+            cleaned = get_pollinations_fallback_url(prompt, scene_idx=idx, aspect_ratio=aspect_ratio)
         seen_urls.add(cleaned)
         out.append(cleaned)
         logger.info("Sanitized Image-%s -> %s", idx + 1, cleaned[:140])
