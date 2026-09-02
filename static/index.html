@@ -345,9 +345,9 @@
       const panel = document.getElementById('ad-resources-panel');
       if (!panel || !project) return;
 
-      const modifications = project.creatomate_modifications || {};
+      const modifications = project.creatomate_modifications || project.modifications || {};
 
-      // 1. Script Processing (Cleans up JSON/Objects to plain text)
+      // 1. Voiceover & Copy Processing
       let scriptText = "";
       const rawScript = project.script || modifications.script;
       if (typeof rawScript === 'object' && rawScript !== null) {
@@ -355,144 +355,146 @@
       } else if (typeof rawScript === 'string') {
         scriptText = rawScript;
       }
-      document.getElementById('full-script-text').value = scriptText || "No voiceover script available.";
+      const scriptInput = document.getElementById('full-script-text');
+      if (scriptInput) scriptInput.value = scriptText || "No voiceover script available.";
 
-      // 2. Scene Text Breakdown (Fixed text contrast with high-visibility badges)
+      // 2. Scene Text Breakdown
       const sceneList = document.getElementById('scene-breakdown-list');
-      sceneList.innerHTML = '';
-      Object.keys(modifications).forEach(key => {
-        const val = modifications[key];
-        if (typeof val === 'string' && !key.toLowerCase().includes('image') && !key.toLowerCase().includes('audio') && !val.startsWith('http')) {
-          const sceneItem = document.createElement('div');
-          sceneItem.style.cssText = 'background: #0f1114; border: 1px solid #343a40; padding: 10px 14px; border-radius: 6px; display: flex; align-items: center; gap: 12px;';
-          sceneItem.innerHTML = `
-            <span style="background: #343a40; color: #f8f9fa; padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; min-width: 140px;">${key}</span>
-            <span style="color: #e0e0e0; font-size: 0.9rem;">${val}</span>
-          `;
-          sceneList.appendChild(sceneItem);
-        }
-      });
+      if (sceneList) {
+        sceneList.innerHTML = '';
+        Object.keys(modifications).forEach(key => {
+          const val = modifications[key];
+          if (typeof val === 'string' && !key.toLowerCase().includes('image') && !key.toLowerCase().includes('audio') && !val.startsWith('http')) {
+            const sceneItem = document.createElement('div');
+            sceneItem.style.cssText = 'background: #0f1114; border: 1px solid #343a40; padding: 10px 14px; border-radius: 6px; display: flex; align-items: center; gap: 12px;';
+            sceneItem.innerHTML = `
+              <span style="background: #343a40; color: #f8f9fa; padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; min-width: 140px;">${key}</span>
+              <span style="color: #e0e0e0; font-size: 0.9rem;">${val}</span>
+            `;
+            sceneList.appendChild(sceneItem);
+          }
+        });
+      }
 
       // 3. Audio Asset Harvester
       const audioContainer = document.getElementById('audio-player-container');
-      audioContainer.innerHTML = '';
-      const audioUrls = new Set();
+      if (audioContainer) {
+        audioContainer.innerHTML = '';
+        const audioUrls = new Set();
 
-      const harvestAudio = (obj) => {
-        if (!obj) return;
-        if (typeof obj === 'string' && obj.startsWith('http')) {
-          if (/\.(mp3|wav|m4a|aac)($|\?)/i.test(obj) || obj.includes('voiceover') || obj.includes('audio')) {
-            audioUrls.add(obj);
+        const harvestAudio = (obj) => {
+          if (!obj) return;
+          if (typeof obj === 'string' && obj.startsWith('http')) {
+            if (/\.(mp3|wav|m4a|aac)($|\?)/i.test(obj) || obj.includes('voiceover') || obj.includes('audio')) {
+              audioUrls.add(obj);
+            }
+          } else if (typeof obj === 'object') {
+            Object.values(obj).forEach(harvestAudio);
           }
-        } else if (typeof obj === 'object') {
-          Object.values(obj).forEach(harvestAudio);
-        }
-      };
+        };
 
-      if (project.voiceover_url) audioUrls.add(project.voiceover_url);
-      if (project.audio_url) audioUrls.add(project.audio_url);
-      harvestAudio(modifications);
+        if (project.voiceover_url) audioUrls.add(project.voiceover_url);
+        if (project.audio_url) audioUrls.add(project.audio_url);
+        harvestAudio(modifications);
 
-      const audioList = Array.from(audioUrls);
-      if (audioList.length === 0) {
-        audioContainer.innerHTML = '<p style="color: #adb5bd; margin: 0;">No audio files attached to this ad project.</p>';
-      } else {
-        audioList.forEach((audioUrl, idx) => {
-          const item = document.createElement('div');
-          item.style.cssText = 'background: #0f1114; border: 1px solid #343a40; padding: 12px; border-radius: 6px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;';
-          item.innerHTML = `
-            <span style="background: #0d6efd; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 600;">Track #${idx + 1}</span>
-            <audio controls style="flex: 1; min-width: 250px; height: 36px;">
-              <source src="${audioUrl}" type="audio/mpeg">
-            </audio>
-            <div style="display: flex; gap: 8px;">
-              <a href="${audioUrl}" target="_blank" download style="background: #198754; color: #fff; padding: 6px 12px; border-radius: 4px; text-decoration: none; font-size: 0.85rem;">⬇️ Download</a>
-              <button onclick="copyToClipboard('${audioUrl}', 'Audio link copied!')" style="background: #2b3035; color: #fff; border: 1px solid #495057; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.85rem;">🔗 Copy Link</button>
-            </div>
-          `;
-          audioContainer.appendChild(item);
-        });
-      }
-
-    // 4. Visual Assets Harvester (Deep recursive crawler for multi-image templates)
-      const imageGrid = document.getElementById('image-gallery-grid');
-      imageGrid.innerHTML = '';
-      
-      const imageUrls = new Set();
-
-      const addCandidate = (val) => {
-        if (typeof val === 'string' && val.startsWith('http')) {
-          const lower = val.toLowerCase();
-          const isImg = /\.(jpg|jpeg|png|webp|gif|svg|avif)($|\?)/i.test(val) || lower.includes('supabase.co') || lower.includes('pollinations') || lower.includes('pexels') || lower.includes('unsplash');
-          const isAudio = /\.(mp3|wav|m4a|mp4)($|\?)/i.test(val);
-          if (isImg && !isAudio) imageUrls.add(val);
-        }
-      };
-
-      // Deep recursive crawler across all object properties & arrays
-      const crawl = (target) => {
-        if (!target) return;
-        if (typeof target === 'string') addCandidate(target);
-        else if (Array.isArray(target)) target.forEach(crawl);
-        else if (typeof target === 'object') Object.values(target).forEach(crawl);
-      };
-
-      // Extract from root arrays & creatomate modifications
-      crawl(project.extracted_images);
-      crawl(project.brand_assets);
-      crawl(project.creatomate_modifications);
-      crawl(project.renders);
-
-      const imageList = Array.from(imageUrls);
-
-      if (imageList.length === 0) {
-        imageGrid.innerHTML = '<p style="color: #adb5bd; margin: 0; grid-column: 1 / -1;">No image assets found for this ad project.</p>';
-      } else {
-        imageList.forEach((imgUrl, idx) => {
-          const card = document.createElement('div');
-          card.style.cssText = 'background: #0f1114; border: 1px solid #343a40; border-radius: 6px; overflow: hidden; display: flex; flex-direction: column;';
-          card.innerHTML = `
-            <div style="height: 130px; background: #000; display: flex; align-items: center; justify-content: center; padding: 8px;">
-              <img src="${imgUrl}" style="max-height: 100%; max-width: 100%; object-fit: contain;" alt="Asset ${idx + 1}" onerror="this.onerror=null;this.src='https://via.placeholder.com/150?text=Image+Load+Error';">
-            </div>
-            <div style="padding: 8px; display: flex; flex-direction: column; gap: 6px; background: #1a1d20;">
-              <a href="${imgUrl}" target="_blank" style="background: #0dcaf0; color: #000; text-align: center; padding: 4px; border-radius: 4px; text-decoration: none; font-size: 0.8rem; font-weight: 600;">🔍 View Original</a>
-              <button onclick="copyToClipboard('${imgUrl}', 'Image link copied!')" style="background: #2b3035; color: #fff; border: 1px solid #495057; padding: 4px; border-radius: 4px; cursor: pointer; font-size: 0.8rem;">🔗 Copy Link</button>
-            </div>
-          `;
-          imageGrid.appendChild(card);
-        });
-      }
-      // Deduplicate by URL while keeping slot names recorded
-      const uniqueImagesMap = new Map();
-      detectedImages.forEach(item => {
-        if (!uniqueImagesMap.has(item.url)) {
-          uniqueImagesMap.set(item.url, [item.slotName]);
+        const audioList = Array.from(audioUrls);
+        if (audioList.length === 0) {
+          audioContainer.innerHTML = '<p style="color: #adb5bd; margin: 0;">No audio files attached to this ad project.</p>';
         } else {
-          uniqueImagesMap.get(item.url).push(item.slotName);
+          audioList.forEach((audioUrl, idx) => {
+            const item = document.createElement('div');
+            item.style.cssText = 'background: #0f1114; border: 1px solid #343a40; padding: 12px; border-radius: 6px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;';
+            item.innerHTML = `
+              <span style="background: #0d6efd; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 600;">Track #${idx + 1}</span>
+              <audio controls style="flex: 1; min-width: 250px; height: 36px;">
+                <source src="${audioUrl}" type="audio/mpeg">
+              </audio>
+              <div style="display: flex; gap: 8px;">
+                <a href="${audioUrl}" target="_blank" download style="background: #198754; color: #fff; padding: 6px 12px; border-radius: 4px; text-decoration: none; font-size: 0.85rem;">⬇️ Download</a>
+                <button onclick="copyToClipboard('${audioUrl}', 'Audio link copied!')" style="background: #2b3035; color: #fff; border: 1px solid #495057; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.85rem;">🔗 Copy Link</button>
+              </div>
+            `;
+            audioContainer.appendChild(item);
+          });
         }
-      });
-
-      if (uniqueImagesMap.size === 0) {
-        imageGrid.innerHTML = '<p style="color: #adb5bd; margin: 0; grid-column: 1 / -1;">No image assets found for this ad project.</p>';
-      } else {
-        uniqueImagesMap.forEach((slots, imgUrl) => {
-          const card = document.createElement('div');
-          card.style.cssText = 'background: #0f1114; border: 1px solid #343a40; border-radius: 6px; overflow: hidden; display: flex; flex-direction: column;';
-          card.innerHTML = `
-            <div style="height: 130px; background: #000; display: flex; align-items: center; justify-content: center; padding: 8px;">
-              <img src="${imgUrl}" style="max-height: 100%; max-width: 100%; object-fit: contain;" alt="Asset" onerror="this.onerror=null;this.src='https://via.placeholder.com/150?text=Image+Load+Error';">
-            </div>
-            <div style="padding: 8px; display: flex; flex-direction: column; gap: 6px; background: #1a1d20;">
-              <span style="font-size: 0.75rem; color: #0dcaf0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${slots.join(', ')}</span>
-              <a href="${imgUrl}" target="_blank" style="background: #0dcaf0; color: #000; text-align: center; padding: 4px; border-radius: 4px; text-decoration: none; font-size: 0.8rem; font-weight: 600;">🔍 View Original</a>
-              <button onclick="copyToClipboard('${imgUrl}', 'Image link copied!')" style="background: #2b3035; color: #fff; border: 1px solid #495057; padding: 4px; border-radius: 4px; cursor: pointer; font-size: 0.8rem;">🔗 Copy Link</button>
-            </div>
-          `;
-          imageGrid.appendChild(card);
-        });
       }
 
+      // 4. Visual Assets Harvester (Deep Crawler Fix)
+      const imageGrid = document.getElementById('image-gallery-grid');
+      if (imageGrid) {
+        imageGrid.innerHTML = '';
+        
+        // Explicitly define detectedImages array
+        const detectedImages = []; 
+        const seenUrls = new Set();
+
+        const addImageCandidate = (url, slotName = "Extracted Asset") => {
+          if (typeof url === 'string' && url.startsWith('http')) {
+            const lower = url.toLowerCase();
+            const isImageExt = /\.(jpg|jpeg|png|webp|gif|svg|avif)($|\?)/i.test(url);
+            const isImageCDN = lower.includes('supabase.co') || lower.includes('pollinations') || lower.includes('pexels') || lower.includes('unsplash') || lower.includes('creatomate');
+            const isAudioOrVideo = /\.(mp3|wav|mp4|webm|m4a)($|\?)/i.test(url) || lower.includes('voiceover');
+
+            if ((isImageExt || isImageCDN) && !isAudioOrVideo) {
+              detectedImages.push({ url, slotName });
+              seenUrls.add(url);
+            }
+          }
+        };
+
+        // Deep crawler function
+        const crawlForImages = (target) => {
+          if (!target) return;
+          if (typeof target === 'string') addImageCandidate(target);
+          else if (Array.isArray(target)) target.forEach(crawlForImages);
+          else if (typeof target === 'object') {
+            Object.entries(target).forEach(([k, v]) => {
+              if (typeof v === 'string' && (k.toLowerCase().includes('image') || k.toLowerCase().includes('photo'))) {
+                addImageCandidate(v, `Slot: ${k}`);
+              } else {
+                crawlForImages(v);
+              }
+            });
+          }
+        };
+
+        crawlForImages(project.extracted_images);
+        crawlForImages(project.brand_assets);
+        crawlForImages(modifications);
+        crawlForImages(project.renders);
+
+        // Group images by URL to display slot badges cleanly
+        const uniqueImagesMap = new Map();
+        detectedImages.forEach(item => {
+          if (!uniqueImagesMap.has(item.url)) {
+            uniqueImagesMap.set(item.url, [item.slotName]);
+          } else {
+            uniqueImagesMap.get(item.url).push(item.slotName);
+          }
+        });
+
+        if (uniqueImagesMap.size === 0) {
+          imageGrid.innerHTML = '<p style="color: #adb5bd; margin: 0; grid-column: 1 / -1;">No image assets found for this ad project.</p>';
+        } else {
+          uniqueImagesMap.forEach((slots, imgUrl) => {
+            const card = document.createElement('div');
+            card.style.cssText = 'background: #0f1114; border: 1px solid #343a40; border-radius: 6px; overflow: hidden; display: flex; flex-direction: column;';
+            card.innerHTML = `
+              <div style="height: 130px; background: #000; display: flex; align-items: center; justify-content: center; padding: 8px;">
+                <img src="${imgUrl}" style="max-height: 100%; max-width: 100%; object-fit: contain;" alt="Asset" onerror="this.onerror=null;this.src='https://via.placeholder.com/150?text=Image+Load+Error';">
+              </div>
+              <div style="padding: 8px; display: flex; flex-direction: column; gap: 6px; background: #1a1d20;">
+                <span style="font-size: 0.75rem; color: #0dcaf0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${slots.join(', ')}</span>
+                <a href="${imgUrl}" target="_blank" style="background: #0dcaf0; color: #000; text-align: center; padding: 4px; border-radius: 4px; text-decoration: none; font-size: 0.8rem; font-weight: 600;">🔍 View Original</a>
+                <button onclick="copyToClipboard('${imgUrl}', 'Image link copied!')" style="background: #2b3035; color: #fff; border: 1px solid #495057; padding: 4px; border-radius: 4px; cursor: pointer; font-size: 0.8rem;">🔗 Copy Link</button>
+              </div>
+            `;
+            imageGrid.appendChild(card);
+          });
+        }
+      }
+
+      // Force Panel Display
       panel.style.display = 'block';
     }
 
