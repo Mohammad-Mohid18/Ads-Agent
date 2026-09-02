@@ -10,6 +10,10 @@ from io import BytesIO
 from pathlib import Path
 from typing import List
 
+
+import shutil
+import imageio_ffmpeg
+
 import httpx
 from mutagen.mp3 import MP3
 
@@ -143,26 +147,44 @@ async def _synthesize_text(provider: str, text: str) -> bytes:
     raise RuntimeError(f"Unsupported TTS_PROVIDER={provider!r}. Use elevenlabs or edge.")
 
 
+def get_ffmpeg_exe() -> str:
+    """Locates system ffmpeg binary or falls back to imageio-ffmpeg."""
+    system_ffmpeg = shutil.which("ffmpeg")
+    if system_ffmpeg:
+        return system_ffmpeg
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
+
 async def _stitch_mp3s(parts: list[bytes]) -> bytes:
-    """Concatenate MP3 segments with ffmpeg into a single stream."""
+    """Stitches multiple MP3 audio byte blobs into a single MP3 output."""
+    if not parts:
+        raise ValueError("No audio parts provided to stitch.")
+    
     if len(parts) == 1:
         return parts[0]
+
+    # Resolve executable path dynamically
+    ffmpeg_bin = get_ffmpeg_exe()
 
     with tempfile.TemporaryDirectory(prefix="ad_voice_") as tmp:
         tmp_path = Path(tmp)
         list_file = tmp_path / "concat.txt"
         inputs: list[Path] = []
+        
         for idx, blob in enumerate(parts):
             path = tmp_path / f"part_{idx:02d}.mp3"
             path.write_bytes(blob)
             inputs.append(path)
+            
         list_file.write_text(
             "\n".join(f"file '{p.resolve()}'" for p in inputs),
             encoding="utf-8",
         )
         output = tmp_path / "full.mp3"
+        
+        # Primary attempt: Stream copy
         command = [
-            "ffmpeg",
+            ffmpeg_bin,
             "-y",
             "-f",
             "concat",
@@ -174,16 +196,18 @@ async def _stitch_mp3s(parts: list[bytes]) -> bytes:
             "copy",
             str(output),
         ]
+        
         process = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
         _, stderr = await process.communicate()
+        
+        # Fallback attempt: Re-encode audio if stream copy fails
         if process.returncode != 0 or not output.is_file():
-            # Re-encode fallback when stream copy fails across encoder variants.
             command = [
-                "ffmpeg",
+                ffmpeg_bin,
                 "-y",
                 "-f",
                 "concat",
@@ -203,10 +227,12 @@ async def _stitch_mp3s(parts: list[bytes]) -> bytes:
                 stderr=asyncio.subprocess.PIPE,
             )
             _, stderr = await process.communicate()
+            
             if process.returncode != 0 or not output.is_file():
                 raise RuntimeError(
                     f"Failed to stitch scene voiceovers: {stderr.decode(errors='replace')[-400:]}"
                 )
+                
         return output.read_bytes()
 
 
