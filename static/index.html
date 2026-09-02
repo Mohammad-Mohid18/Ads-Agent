@@ -239,57 +239,34 @@
         <!-- 3 Video Players rendered dynamically -->
         <div class="video-batch-grid" id="videoBatchContainer"></div>
 
-        <!-- Targeted Editing Controls -->
-        <div class="edit-panel">
-          <h4 style="margin-bottom: 6px;">Targeted Editing</h4>
-          <p style="font-size: 12px; color: var(--muted); margin-bottom: 16px;">Edit the selected template variant. Image values accept a URL or a generation prompt; text edits re-synthesize its voiceover.</p>
-
-          <div class="edit-controls">
-            <div>
-              <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 6px;">Target Layer / Scene</label>
-              <select id="targetLayer">
-                <option value="Image-1">Scene 1 Image (Image-1)</option>
-                <option value="Image-2">Scene 2 Image (Image-2)</option>
-                <option value="Image-3">Scene 3 Image (Image-3)</option>
-                <option value="Text-1">Scene 1 Text (Text-1)</option>
-                <option value="Text-2">Scene 2 Text (Text-2)</option>
-                <option value="Text-3">Scene 3 Text (Text-3)</option>
-              </select>
-            </div>
-
-            <div>
-              <label style="font-size: 12px; font-weight: 700; display: block; margin-bottom: 6px;">New Value / Prompt / Image URL</label>
-              <input type="text" class="edit-input" id="newValue" placeholder="Enter image URL or new prompt text" required />
-            </div>
-
-            <button type="button" class="btn-submit" onclick="applyEdit()">Apply Edit</button>
+        <!-- Interactive Creatomate Studio for Editing -->
+        <div class="card my-4 p-3 shadow-sm" id="studioPanel" style="display: none;">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <h4 class="m-0">Interactive Video Studio</h4>
+            <button id="save-rerender-btn" class="btn btn-success fw-bold">
+              💾 Save Changes & Re-Render
+            </button>
           </div>
+
+          <!-- Creatomate Studio Mount Point -->
+          <div 
+            id="creatomate-editor" 
+            style="width: 100%; height: 680px; border-radius: 8px; border: 1px solid #333; background: #000;"
+          ></div>
         </div>
       </div>
     </main>
   </div>
 
   <script>
-    let currentAdId = null;
-    let latestProject = null;
-    const variantSceneCounts = {
-      service_local: { scenes: 2, images: 1 },
-      news_showcase: { scenes: 3, images: 3 },
-      product: { scenes: 2, images: 1 }
-    };
 
-    function updateTargetLayers() {
-      const variant = document.getElementById('variantSelector').value;
-      const target = document.getElementById('targetLayer');
-      const { scenes, images } = variantSceneCounts[variant];
-      target.innerHTML = '';
-      for (let i = 1; i <= images; i++) {
-        target.add(new Option(`Scene ${i} Image (Image-${i})`, `Image-${i}`));
-      }
-      for (let i = 1; i <= scenes; i++) {
-        target.add(new Option(`Scene ${i} Text (Text-${i})`, `Text-${i}`));
-      }
-    }
+    // ============================================
+    // Global Variables
+    // ============================================
+    let currentAdId = null;
+    let currentTemplateId = null;
+    let studioPreview = null;
+    let latestProject = null;
 
     async function generateAd(event) {
       event.preventDefault();
@@ -369,8 +346,14 @@
 
         currentAdId = adId;
         latestProject = project;
+
+        // Display video batch locally on your dashboard
         renderVideoBatch(project);
-        if (project.status !== 'ready' && project.status !== 'failed') pollAdStatus(adId);
+
+        // If still rendering, poll for updates
+        if (project.status !== 'ready' && project.status !== 'failed') {
+          pollAdStatus(adId);
+        }
       } catch (err) {
         alert('Could not load ad: ' + err.message);
       }
@@ -385,20 +368,43 @@
         "Service Business": project.preview_url
       };
 
+      // Map template names to variant identifiers
+      const variantMap = {
+        "service_local": "service_local",
+        "Service Business": "service_local",
+        "Service Local": "service_local",
+        "news_showcase": "news_showcase",
+        "News Showcase": "news_showcase",
+        "ecommerce": "ecommerce",
+        "product": "ecommerce",
+        "Product": "ecommerce",
+        "E-commerce": "ecommerce"
+      };
+
       Object.entries(renders).forEach(([key, rawUrl]) => {
         if (!rawUrl) return;
 
         // Resolve local proxy route /media/ to full browser URL
         const videoUrl = rawUrl.startsWith('/') ? `${window.location.origin}${rawUrl}` : rawUrl;
         
+        // Determine variant from key
+        const variant = variantMap[key] || "service_local";
+        
         const card = document.createElement('div');
         card.className = 'video-card';
+        // Inside renderVideoBatch function:
         card.innerHTML = `
-          <h4>${key.replace(/_/g, ' ')}${key === document.getElementById('variantSelector').value ? ' (editing)' : ''}</h4>
+          <h4>${key.replace(/_/g, ' ')}</h4>
           <video controls autoplay loop playsinline>
             <source src="${videoUrl}" type="video/mp4">
-            Your browser does not support video playback.
           </video>
+          <button 
+            class="btn-submit" 
+            style="width: 100%; margin-top: 10px;" 
+            onclick="openStudioHandoff('${project.id}', '${variant}')"
+          >
+            ✏️ Edit in Studio
+          </button>
         `;
         container.appendChild(card);
       });
@@ -406,46 +412,109 @@
       document.getElementById('editorSection').style.display = 'block';
     }
 
-    async function applyEdit() {
-      if (!currentAdId) return alert('No active ad session');
-      
-      const layer = document.getElementById('targetLayer').value;
-      const val = document.getElementById('newValue').value;
-      const templateKey = document.getElementById('variantSelector').value;
-      const loader = document.getElementById('loader');
-
-      loader.style.display = 'block';
-
+    async function openStudioHandoff(adId, variant = "service_local") {
       try {
-        const res = await fetch(`/api/v1/ads/${currentAdId}/edit`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            target_layer: layer,
-            new_value: val,
-            template_key: templateKey
-          })
-        });
+        const response = await fetch(`/api/v1/ads/${adId}/edit-url?variant=${encodeURIComponent(variant)}`);
+        if (!response.ok) throw new Error("Failed to fetch studio link");
 
-        const data = await res.json();
-        if (res.ok) {
-          document.getElementById('newValue').value = '';
-          pollAdStatus(currentAdId);
-        } else {
-          alert('Edit Error: ' + JSON.stringify(data.detail));
-          loader.style.display = 'none';
+        const data = await response.json();
+        if (data.editor_url) {
+          window.open(data.editor_url, '_blank');
         }
       } catch (err) {
-        alert('Edit Request Failed: ' + err.message);
-        loader.style.display = 'none';
+        alert("❌ Error opening Studio: " + err.message);
       }
     }
 
+    // Keep aliases to prevent breaking any existing button references
+    function loadAdInStudio(adId, variant = "service_local") { openStudioHandoff(adId, variant); }
+    function redirectToEditor(adId, variant = "service_local") { openStudioHandoff(adId, variant); }
+
+    // Save & Re-Render Listener Initialization
+    const saveBtn = document.getElementById('save-rerender-btn');
+    if (saveBtn) {
+      saveBtn.addEventListener('click', async () => {
+        if (!studioPreview || !currentAdId) {
+          alert('No active studio session found.');
+          return;
+        }
+
+        const loader = document.getElementById('loader');
+        if (loader) loader.style.display = 'block';
+
+        try {
+          // Extract updated state from studio preview canvas
+          const updatedModifications = await studioPreview.getModifications();
+
+          // Submit re-render request to FastAPI backend
+          const response = await fetch(`/api/v1/ads/${currentAdId}/re-render`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              template_id: currentTemplateId,
+              updated_modifications: updatedModifications
+            })
+          });
+
+          const result = await response.json();
+          if (response.ok) {
+            console.log('✅ Re-render started for version', result.version);
+            alert('Re-render initiated! Processing updated ad video...');
+            
+            if (typeof pollReRenderStatus === 'function') {
+              pollReRenderStatus(currentAdId);
+            }
+          } else {
+            alert('Failed to re-render ad: ' + (result.detail || 'Server error'));
+            if (loader) loader.style.display = 'none';
+          }
+        } catch (err) {
+          alert('Re-render request failed: ' + err.message);
+          console.error(err);
+          if (loader) loader.style.display = 'none';
+        }
+      });
+    }
+
+    async function pollReRenderStatus(adId) {
+      const loader = document.getElementById('loader');
+      const maxAttempts = 60; // 60 * 5s = 5 minutes max
+      let attempts = 0;
+
+      const interval = setInterval(async () => {
+        attempts++;
+        try {
+          const res = await fetch(`/api/v1/ads/${adId}/status`);
+          const project = await res.json();
+
+          if (project.status === 'ready') {
+            clearInterval(interval);
+            loader.style.display = 'none';
+            
+            // Refresh the video batch display with new render
+            latestProject = project;
+            renderVideoBatch(project);
+            
+            alert('✅ Your updated ad has been re-rendered successfully!');
+          } else if (project.status === 'failed') {
+            clearInterval(interval);
+            loader.style.display = 'none';
+            alert('❌ Re-render failed: ' + (project.error || 'Unknown error'));
+          } else if (attempts >= maxAttempts) {
+            clearInterval(interval);
+            loader.style.display = 'none';
+            alert('⏱️ Re-render is taking longer than expected. Check back in a moment.');
+          }
+        } catch (err) {
+          console.error("Re-render polling error:", err);
+        }
+      }, 5000); // Poll every 5 seconds
+    }
+
     document.getElementById('variantSelector').addEventListener('change', () => {
-      updateTargetLayers();
       if (latestProject) renderVideoBatch(latestProject);
     });
-    updateTargetLayers();
   </script>
+
 </body>
 </html>

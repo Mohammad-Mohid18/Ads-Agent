@@ -75,6 +75,7 @@ class VideoProject(BaseModel):
     error: Optional[str] = None
     preview_url: Optional[str] = None  # Primary featured render
     preview_urls: Optional[dict[str, str]] = Field(default_factory=dict)  # Maps template_key -> URL
+    creatomate_modifications: Optional[dict[str, Any]] = Field(default_factory=dict)  # Stored modifications sent to Creatomate
     brand_assets: Optional[BrandAssets] = None
     script: Optional[Script] = None
     voice: Optional[VoiceResult] = None
@@ -98,6 +99,25 @@ class EditResponse(BaseModel):
     ad_id: str
     status: str
     preview_url: Optional[str]
+
+
+class EditUrlResponse(BaseModel):
+    ad_id: str
+    status: str
+    editor_url: str
+    template_id: Optional[str] = None
+
+
+class ReRenderRequest(BaseModel):
+    template_id: Optional[str] = None
+    updated_modifications: Dict[str, Any]
+
+
+class ReRenderResponse(BaseModel):
+    ad_id: str
+    status: str
+    preview_url: Optional[str]
+    version: int
 
 
 class Storage:
@@ -194,8 +214,10 @@ class Storage:
             self._upsert_record("ad_renders", {
                 "project_id": project.id,
                 "version": project.version,
+                "template_id": project.template_id,
                 "storage_path": storage_path or project.preview_url.removeprefix("/media/"),
                 "preview_url": project.preview_url,
+                "creatomate_modifications": project.creatomate_modifications or {},
                 "layers": project.layers or {},
                 "updated_at": project.updated_at.isoformat(),
             }, "project_id,version")
@@ -266,3 +288,33 @@ class Storage:
                 self._raise_for_supabase_error(response, "list")
             return [row["id"] for row in response.json()]
         return list(self._read_all().keys())
+
+    def get_render(self, project_id: str, version: int = 1) -> Optional[Dict[str, Any]]:
+        """Retrieve a specific render record with its creatomate_modifications."""
+        if self.using_supabase:
+            params = {
+                "project_id": f"eq.{project_id}",
+                "version": f"eq.{version}",
+                "select": "*"
+            }
+            with httpx.Client(timeout=15.0) as client:
+                response = client.get(
+                    f"{self.supabase_url}/rest/v1/ad_renders",
+                    headers=self._headers,
+                    params=params
+                )
+            if response.is_error:
+                self._raise_for_supabase_error(response, "read render")
+            rows = response.json()
+            return rows[0] if rows else None
+        return None
+
+    def get_creatomate_modifications(self, project_id: str, version: int = 1) -> Dict[str, Any]:
+        """Retrieve creatomate modifications for a specific render."""
+        render = self.get_render(project_id, version)
+        if render:
+            return render.get("creatomate_modifications", {})
+        
+        # Fallback to project-level modifications if render not found
+        project = self.get_project(project_id)
+        return project.creatomate_modifications if project else {}

@@ -1,21 +1,24 @@
 import os
 import uuid
+import json
 import logging
 import shutil
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.responses import JSONResponse, FileResponse, Response, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from typing import Optional
 
-from models import GenerateRequest, GenerateResponse, EditRequest, EditResponse, VideoProject, Storage
+from models import GenerateRequest, GenerateResponse, EditRequest, EditResponse, VideoProject, Storage, EditUrlResponse, ReRenderRequest, ReRenderResponse
 from services.scraper import scrape_site
-from services.video_composer import edit_ad_component, render_templates_sequentially
+from services.video_composer import edit_ad_component, render_templates_sequentially, re_render_with_modifications
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ai_ad_engine")
@@ -143,3 +146,199 @@ async def edit_ad(ad_id: str, req: EditRequest, background_tasks: BackgroundTask
     except Exception as e:
         logger.exception("Edit failed for %s: %s", ad_id, e)
         raise HTTPException(status_code=500, detail=str(e))
+
+from urllib.parse import quote
+import json
+
+@app.get("/api/v1/ads/{ad_id}/edit-url", response_model=EditUrlResponse)
+async def get_edit_url(ad_id: str, variant: Optional[str] = Query("service_local")):
+        """Returns the direct Creatomate templates dashboard link."""
+        project = storage.get_project(ad_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Ad project not found")
+
+        # Your updated project workspace ID
+        project_space_id = "3129e5c1-7323-43c5-ac5d-0082a565522b"
+        
+        # Direct templates list URL
+        editor_url = f"https://creatomate.com/projects/{project_space_id}/templates"
+
+        return EditUrlResponse(
+            ad_id=ad_id,
+            status="success",
+            editor_url=editor_url,
+            template_id=project.template_id or ""
+        )
+
+@app.get("/api/v1/ads/{ad_id}/editor-session")
+async def get_editor_session(
+    ad_id: str,
+    variant: Optional[str] = Query(None),
+    template_id: Optional[str] = Query(None)
+):
+    """Load an ad into the Creatomate Embedded Studio Editor.
+    
+    Returns the template_id and modifications needed to initialize the
+    interactive Creatomate Studio with the user's exact generated ad state.
+    
+    Optional Parameters:
+    - variant: Ad style variant (service_local, news_showcase, ecommerce). Defaults to service_local.
+    - template_id: Specific template ID to use. If provided, takes precedence over variant.
+    
+    The frontend uses this to populate the studio with the current ad content
+    (text, images, audio) so users can edit from their current state.
+    """
+    project = storage.get_project(ad_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="ad_id not found")
+
+    # Default to service_local if no variant specified
+    selected_variant = variant or "service_local"
+    
+    logger.info(
+        "Editor session requested for ad %s (variant_param=%s, selected_variant=%s, project_template=%s)",
+        ad_id,
+        repr(variant),
+        selected_variant,
+        project.template_id
+    )
+    
+    # Verify project has modifications
+    if not project.creatomate_modifications:
+        logger.error(
+            "Cannot load editor session for ad %s: no creatomate_modifications stored",
+            ad_id
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Ad not fully generated yet or modifications not available"
+        )
+
+    # Use provided template_id or fall back to project's template_id
+    selected_template_id = template_id or project.template_id
+    
+    if not selected_template_id:
+        logger.error("Cannot load editor session for ad %s: no template_id available", ad_id)
+        raise HTTPException(
+            status_code=400,
+            detail="No template_id found for this ad"
+        )
+
+    try:
+        logger.info(
+            "Loading editor session for ad %s (variant=%s, template=%s)",
+            ad_id,
+            selected_variant,
+            selected_template_id
+        )
+        
+        return {
+            "ad_id": ad_id,
+            "variant": selected_variant,
+            "template_id": selected_template_id,
+            "modifications": project.creatomate_modifications,
+            "status": "ready"
+        }
+    except Exception as e:
+        logger.exception("Failed to load editor session for %s: %s", ad_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/ads/{ad_id}/re-render", response_model=ReRenderResponse)
+async def re_render_ad(ad_id: str, req: ReRenderRequest, background_tasks: BackgroundTasks):
+    """Re-render an ad with updated modifications.
+    
+    This endpoint accepts updated text, images, and audio layer modifications,
+    re-renders the ad through Creatomate with the new values, and stores the
+    updated video back to Supabase.
+    
+    Payload example:
+    {
+        "template_id": "optional-override-template-id",
+        "updated_modifications": {
+            "Text-1": "Updated text content",
+            "Image-1": "https://new-image-url.jpg",
+            "Audio-1": "https://new-audio-url.mp3"
+        }
+    }
+    """
+    project = storage.get_project(ad_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="ad_id not found")
+
+    if not req.updated_modifications:
+        raise HTTPException(
+            status_code=400,
+            detail="updated_modifications is required"
+        )
+
+    logger.info(
+        "Re-render requested for ad %s with %d modifications",
+        ad_id,
+        len(req.updated_modifications)
+    )
+
+    # Run re-render in background
+    background_tasks.add_task(
+        _run_re_render_pipeline,
+        ad_id,
+        project,
+        req.updated_modifications,
+        req.template_id
+    )
+
+    return ReRenderResponse(
+        ad_id=ad_id,
+        status="processing",
+        preview_url=None,
+        version=project.version + 1
+    )
+
+
+async def _run_re_render_pipeline(
+    ad_id: str,
+    project: VideoProject,
+    updated_modifications: dict,
+    template_id: Optional[str] = None
+):
+    """Background task to re-render an ad with updated modifications."""
+    try:
+        logger.info("Starting re-render pipeline for ad %s", ad_id)
+        
+        # Execute re-render with Creatomate
+        storage_path, public_url = await re_render_with_modifications(
+            project,
+            updated_modifications,
+            template_id
+        )
+        
+        if not public_url:
+            logger.error("Re-render failed for ad %s: no URL returned", ad_id)
+            project.status = "failed"
+            project.error = "Re-render returned no video URL"
+            storage.save_project(project)
+            return
+
+        # Update project with new render
+        project.preview_url = public_url
+        project.status = "ready"
+        storage.save_project(project)
+
+        logger.info("Re-render succeeded for ad %s (v%d): %s", ad_id, project.version, public_url)
+
+    except Exception as e:
+        logger.exception("Re-render pipeline failed for ad %s: %s", ad_id, e)
+        project.status = "failed"
+        project.error = f"Re-render failed: {str(e)}"
+        storage.save_project(project)
+
+
+# @app.get("/editor", response_class=FileResponse)
+# async def serve_editor_page():
+#     editor_html_path = STATIC_DIR / "editor.html"
+#     if not editor_html_path.exists():
+#         raise HTTPException(
+#             status_code=404, 
+#             detail=f"editor.html not found in static directory at: {editor_html_path}"
+#         )
+#     return FileResponse(editor_html_path)

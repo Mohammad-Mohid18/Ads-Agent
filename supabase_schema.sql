@@ -6,9 +6,11 @@ create table if not exists public.video_projects (
   id uuid primary key,
   source_url text,
   aspect_ratio text,
+  template_id text,
   status text not null default 'processing',
   error text,
   project_data jsonb not null,
+  creatomate_modifications jsonb default '{}'::jsonb,
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now())
 );
@@ -51,8 +53,10 @@ create table if not exists public.ad_voiceovers (
 create table if not exists public.ad_renders (
   project_id uuid not null references public.video_projects(id) on delete cascade,
   version integer not null,
+  template_id text,
   storage_path text not null,
   preview_url text not null,
+  creatomate_modifications jsonb default '{}'::jsonb,
   layers jsonb not null default '{}'::jsonb,
   updated_at timestamptz not null default timezone('utc', now()),
   primary key (project_id, version)

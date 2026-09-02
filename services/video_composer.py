@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -296,7 +297,10 @@ async def render_single_template(
     template_id: str,
     voice_duration: float | None = None,
 ) -> tuple[str, str]:
-    """Renders a single template and uploads its finished video to Supabase."""
+    """Renders a single template and uploads its finished video to Supabase.
+    
+    Extracts and persists the creatomate_modifications payload for later editing.
+    """
     body = _build_template_payload(
         script=script, 
         image_urls=image_urls, 
@@ -305,6 +309,11 @@ async def render_single_template(
         assets=assets,
         voice_duration=voice_duration,
     )
+
+    # Extract and store modifications for post-generation editing
+    modifications = body.get("modifications", {})
+    project.creatomate_modifications = modifications
+    project.template_id = template_id
 
     if not VIDEO_API_KEY:
         preview = await _render_local_video(project, script, template_key=template_key)
@@ -859,3 +868,91 @@ async def _render_local_video(
 
 def _safe_color(value: str | None) -> str:
     return value if value and re.fullmatch(r"#[0-9a-fA-F]{6}", value) else "#1E3A8A"
+
+
+async def re_render_with_modifications(
+    project: VideoProject,
+    updated_modifications: dict[str, Any],
+    template_id: Optional[str] = None,
+) -> tuple[str, Optional[str]]:
+    """Re-render an existing ad with updated modifications and persist to Supabase.
+    
+    Args:
+        project: The VideoProject to re-render
+        updated_modifications: Dictionary of updated layer values (e.g., {"Text-1": "New text"})
+        template_id: Optional template ID override (defaults to project.template_id)
+    
+    Returns:
+        Tuple of (storage_path, public_url) or ("", None) on failure
+    """
+    active_template_id = template_id or project.template_id or DEFAULT_TEMPLATE_ID
+    
+    if not VIDEO_API_KEY:
+        logger.warning("CREATOMATE_API_KEY not set; cannot re-render")
+        return "", None
+
+    # Build render payload with merged modifications
+    current_mods = project.creatomate_modifications or {}
+    merged_modifications = {**current_mods, **updated_modifications}
+    
+    body = {
+        "template_id": active_template_id,
+        "modifications": merged_modifications,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {VIDEO_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # Submit re-render request
+            response = await client.post(VIDEO_API_URL, headers=headers, json=body)
+            if response.is_error:
+                logger.error(
+                    "Re-render failed (%d): %s",
+                    response.status_code,
+                    response.text[:300],
+                )
+                return "", None
+
+            payload = response.json()
+            render = payload[0] if isinstance(payload, list) else payload
+            render_id = render.get("id")
+            
+            logger.info("Re-render submitted with ID: %s", render_id)
+
+            # Poll for completion
+            final = await _poll_render(client, headers, render_id)
+            remote_url = final.get("url")
+
+        # Download rendered MP4 and persist to Supabase
+        video_bytes = await download_url_bytes(remote_url)
+        
+        # Increment version and save with new version number
+        project.version = (project.version or 1) + 1
+        object_path = f"renders/{project.id}_re-render_v{project.version}.mp4"
+        stored_url = await upload_bytes(object_path, video_bytes, "video/mp4")
+
+        # Update project state
+        project.creatomate_modifications = merged_modifications
+        project.preview_url = stored_url
+        project.updated_at = datetime.utcnow()
+
+        # Persist updated project and modifications to Supabase
+        storage = Storage()
+        storage.save_project(project)
+
+        public_url = clean_asset_url(stored_url) or stored_url
+        logger.info(
+            "Re-render succeeded: %s (v%d) stored at %s",
+            project.id,
+            project.version,
+            object_path,
+        )
+        return object_path, public_url
+
+    except Exception as exc:
+        logger.exception("Re-render failed for project %s: %s", project.id, exc)
+        return "", None
