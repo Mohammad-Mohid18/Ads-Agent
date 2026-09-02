@@ -220,6 +220,17 @@ def get_pollinations_fallback_url(
         f"?width={width}&height={height}&model=flux&nologo=true&enhance=true&seed={scene_idx + 1}"
     )
 
+# Alias for backwards compatibility with services/visuals.py
+get_pollinations_fallback_image = get_pollinations_fallback_url
+
+__all__ = [
+    "sanitize_scene_visual",
+    "sanitize_image_list",
+    "sanitize_audio_url",
+    "generate_image_with_fallbacks",
+    "get_pollinations_fallback_url",
+    "get_pollinations_fallback_image",
+]
 
 async def generate_image_pollinations(
     prompt: str,
