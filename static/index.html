@@ -7,6 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
 
   <style>
     :root {
@@ -257,8 +258,204 @@
       </div>
     </main>
   </div>
+     <!-- Asset & Script Inspector Panel -->
+  <div id="ad-resources-panel" style="display: none; background: #1a1d20; color: #ffffff; border: 1px solid #343a40; border-radius: 10px; padding: 24px; margin-top: 24px;">
+    
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+      <h3 style="font-size: 1.25rem; font-weight: 600; margin: 0; color: #f8f9fa;">📁 Generated Ad Resources</h3>
+      <button onclick="copyFullScript()" style="background: #2b3035; color: #fff; border: 1px solid #495057; padding: 6px 12px; border-radius: 6px; cursor: pointer;">📋 Copy Script</button>
+    </div>
+
+    <!-- Custom Tab Headers -->
+    <div style="display: flex; gap: 8px; border-bottom: 1px solid #343a40; margin-bottom: 20px;">
+      <button id="tab-btn-script" onclick="switchResourceTab('script')" style="background: #0d6efd; color: #fff; border: none; padding: 8px 16px; border-radius: 6px 6px 0 0; cursor: pointer; font-weight: 500;">Voiceover & Copy</button>
+      <button id="tab-btn-audio" onclick="switchResourceTab('audio')" style="background: #2b3035; color: #adb5bd; border: none; padding: 8px 16px; border-radius: 6px 6px 0 0; cursor: pointer; font-weight: 500;">🎙️ Voiceover Audio</button>
+      <button id="tab-btn-images" onclick="switchResourceTab('images')" style="background: #2b3035; color: #adb5bd; border: none; padding: 8px 16px; border-radius: 6px 6px 0 0; cursor: pointer; font-weight: 500;">🖼️ Visual Assets</button>
+    </div>
+
+    <!-- Tab Content Sections -->
+    <div id="tab-content-script">
+      <div style="margin-bottom: 16px;">
+        <label style="display: block; font-size: 0.85rem; color: #adb5bd; margin-bottom: 6px;">Full Voiceover Script</label>
+        <textarea id="full-script-text" style="width: 100%; background: #0f1114; color: #33d17a; border: 1px solid #343a40; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 0.9rem;" rows="4" readonly></textarea>
+      </div>
+      <div id="scene-breakdown-list" style="display: flex; flex-direction: column; gap: 10px;"></div>
+    </div>
+
+    <div id="tab-content-audio" style="display: none;">
+      <div id="audio-player-container" style="display: flex; flex-direction: column; gap: 12px;"></div>
+    </div>
+
+    <div id="tab-content-images" style="display: none;">
+      <div id="image-gallery-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px;"></div>
+    </div>
+
+  </div>
 
   <script>
+
+      // Tab Switching Controller
+    function switchResourceTab(tabName) {
+      const tabs = ['script', 'audio', 'images'];
+      tabs.forEach(t => {
+        const btn = document.getElementById(`tab-btn-${t}`);
+        const content = document.getElementById(`tab-content-${t}`);
+        if (t === tabName) {
+          btn.style.background = '#0d6efd';
+          btn.style.color = '#ffffff';
+          content.style.display = 'block';
+        } else {
+          btn.style.background = '#2b3035';
+          btn.style.color = '#adb5bd';
+          content.style.display = 'none';
+        }
+      });
+    }
+
+    // Reliable Clipboard Helper
+    async function copyToClipboard(text, successMessage = "Copied to clipboard!") {
+      if (!text) return alert("Nothing to copy!");
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const textArea = document.createElement("textarea");
+          textArea.value = text;
+          textArea.style.position = "fixed";
+          textArea.style.left = "-999999px";
+          document.body.appendChild(textArea);
+          textArea.focus();
+          textArea.select();
+          document.execCommand('copy');
+          textArea.remove();
+        }
+        alert("✅ " + successMessage);
+      } catch (err) {
+        alert("❌ Copy failed: " + err.message);
+      }
+    }
+
+    function copyFullScript() {
+      const scriptVal = document.getElementById('full-script-text').value;
+      copyToClipboard(scriptVal, "Script copied to clipboard!");
+    }
+
+    // Main Panel Renderer
+    function renderAdResourcesPanel(project) {
+      const panel = document.getElementById('ad-resources-panel');
+      if (!panel || !project) return;
+
+      const modifications = project.creatomate_modifications || {};
+
+      // 1. Script Processing (Cleans up JSON/Objects to plain text)
+      let scriptText = "";
+      const rawScript = project.script || modifications.script;
+      if (typeof rawScript === 'object' && rawScript !== null) {
+        scriptText = rawScript.full_script || rawScript.voiceover || JSON.stringify(rawScript, null, 2);
+      } else if (typeof rawScript === 'string') {
+        scriptText = rawScript;
+      }
+      document.getElementById('full-script-text').value = scriptText || "No voiceover script available.";
+
+      // 2. Scene Text Breakdown (Fixed text contrast with high-visibility badges)
+      const sceneList = document.getElementById('scene-breakdown-list');
+      sceneList.innerHTML = '';
+      Object.keys(modifications).forEach(key => {
+        const val = modifications[key];
+        if (typeof val === 'string' && !key.toLowerCase().includes('image') && !key.toLowerCase().includes('audio') && !val.startsWith('http')) {
+          const sceneItem = document.createElement('div');
+          sceneItem.style.cssText = 'background: #0f1114; border: 1px solid #343a40; padding: 10px 14px; border-radius: 6px; display: flex; align-items: center; gap: 12px;';
+          sceneItem.innerHTML = `
+            <span style="background: #343a40; color: #f8f9fa; padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; min-width: 140px;">${key}</span>
+            <span style="color: #e0e0e0; font-size: 0.9rem;">${val}</span>
+          `;
+          sceneList.appendChild(sceneItem);
+        }
+      });
+
+      // 3. Audio Asset Harvester
+      const audioContainer = document.getElementById('audio-player-container');
+      audioContainer.innerHTML = '';
+      const audioUrls = new Set();
+
+      const harvestAudio = (obj) => {
+        if (!obj) return;
+        if (typeof obj === 'string' && obj.startsWith('http')) {
+          if (/\.(mp3|wav|m4a|aac)($|\?)/i.test(obj) || obj.includes('voiceover') || obj.includes('audio')) {
+            audioUrls.add(obj);
+          }
+        } else if (typeof obj === 'object') {
+          Object.values(obj).forEach(harvestAudio);
+        }
+      };
+
+      if (project.voiceover_url) audioUrls.add(project.voiceover_url);
+      if (project.audio_url) audioUrls.add(project.audio_url);
+      harvestAudio(modifications);
+
+      const audioList = Array.from(audioUrls);
+      if (audioList.length === 0) {
+        audioContainer.innerHTML = '<p style="color: #adb5bd; margin: 0;">No audio files attached to this ad project.</p>';
+      } else {
+        audioList.forEach((audioUrl, idx) => {
+          const item = document.createElement('div');
+          item.style.cssText = 'background: #0f1114; border: 1px solid #343a40; padding: 12px; border-radius: 6px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;';
+          item.innerHTML = `
+            <span style="background: #0d6efd; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 600;">Track #${idx + 1}</span>
+            <audio controls style="flex: 1; min-width: 250px; height: 36px;">
+              <source src="${audioUrl}" type="audio/mpeg">
+            </audio>
+            <div style="display: flex; gap: 8px;">
+              <a href="${audioUrl}" target="_blank" download style="background: #198754; color: #fff; padding: 6px 12px; border-radius: 4px; text-decoration: none; font-size: 0.85rem;">⬇️ Download</a>
+              <button onclick="copyToClipboard('${audioUrl}', 'Audio link copied!')" style="background: #2b3035; color: #fff; border: 1px solid #495057; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.85rem;">🔗 Copy Link</button>
+            </div>
+          `;
+          audioContainer.appendChild(item);
+        });
+      }
+
+      // 4. Visual Assets Harvester
+      const imageGrid = document.getElementById('image-gallery-grid');
+      imageGrid.innerHTML = '';
+      const imageUrls = new Set();
+
+      const harvestImages = (obj) => {
+        if (!obj) return;
+        if (typeof obj === 'string' && obj.startsWith('http')) {
+          if (/\.(jpg|jpeg|png|webp|gif|svg)($|\?)/i.test(obj) || obj.includes('supabase.co') || obj.includes('unsplash.com') || obj.includes('images')) {
+            imageUrls.add(obj);
+          }
+        } else if (typeof obj === 'object') {
+          Object.values(obj).forEach(harvestImages);
+        }
+      };
+
+      (project.extracted_images || []).forEach(url => imageUrls.add(url));
+      (project.brand_assets?.images || []).forEach(url => imageUrls.add(url));
+      harvestImages(modifications);
+
+      const imageList = Array.from(imageUrls);
+      if (imageList.length === 0) {
+        imageGrid.innerHTML = '<p style="color: #adb5bd; margin: 0; grid-column: 1 / -1;">No image assets found for this ad project.</p>';
+      } else {
+        imageList.forEach((imgUrl, idx) => {
+          const card = document.createElement('div');
+          card.style.cssText = 'background: #0f1114; border: 1px solid #343a40; border-radius: 6px; overflow: hidden; display: flex; flex-direction: column;';
+          card.innerHTML = `
+            <div style="height: 130px; background: #000; display: flex; align-items: center; justify-content: center; padding: 8px;">
+              <img src="${imgUrl}" style="max-height: 100%; max-width: 100%; object-fit: contain;" alt="Asset ${idx + 1}" onerror="this.onerror=null;this.src='https://via.placeholder.com/150?text=Image+Load+Error';">
+            </div>
+            <div style="padding: 8px; display: flex; flex-direction: column; gap: 6px; background: #1a1d20;">
+              <a href="${imgUrl}" target="_blank" style="background: #0dcaf0; color: #000; text-align: center; padding: 4px; border-radius: 4px; text-decoration: none; font-size: 0.8rem; font-weight: 600;">🔍 View Original</a>
+              <button onclick="copyToClipboard('${imgUrl}', 'Image link copied!')" style="background: #2b3035; color: #fff; border: 1px solid #495057; padding: 4px; border-radius: 4px; cursor: pointer; font-size: 0.8rem;">🔗 Copy Link</button>
+            </div>
+          `;
+          imageGrid.appendChild(card);
+        });
+      }
+
+      panel.style.display = 'block';
+    }
 
     // ============================================
     // Global Variables
@@ -347,10 +544,9 @@
         currentAdId = adId;
         latestProject = project;
 
-        // Display video batch locally on your dashboard
+        // Render batch locally on dashboard
         renderVideoBatch(project);
 
-        // If still rendering, poll for updates
         if (project.status !== 'ready' && project.status !== 'failed') {
           pollAdStatus(adId);
         }
@@ -410,6 +606,8 @@
       });
 
       document.getElementById('editorSection').style.display = 'block';
+
+      renderAdResourcesPanel(project);
     }
 
     async function openStudioHandoff(adId, variant = "service_local") {
