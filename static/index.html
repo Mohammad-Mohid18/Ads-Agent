@@ -414,38 +414,65 @@
         });
       }
 
-      // 4. Visual Assets Harvester
+    // 4. Visual Assets Harvester
       const imageGrid = document.getElementById('image-gallery-grid');
       imageGrid.innerHTML = '';
-      const imageUrls = new Set();
+      
+      // Track images along with their template slot names
+      const detectedImages = []; // Stores objects: { url, slotName }
+      const seenUrls = new Set();
 
-      const harvestImages = (obj) => {
-        if (!obj) return;
-        if (typeof obj === 'string' && obj.startsWith('http')) {
-          if (/\.(jpg|jpeg|png|webp|gif|svg)($|\?)/i.test(obj) || obj.includes('supabase.co') || obj.includes('unsplash.com') || obj.includes('images')) {
-            imageUrls.add(obj);
+      const addImageCandidate = (url, slotName = "Extracted Asset") => {
+        if (typeof url === 'string' && url.startsWith('http')) {
+          const lower = url.toLowerCase();
+          const isImageExt = /\.(jpg|jpeg|png|webp|gif|svg|avif)($|\?)/i.test(url);
+          const isImageCDN = lower.includes('supabase.co') || lower.includes('unsplash.com') || lower.includes('creatomate') || lower.includes('images');
+          const isAudioOrVideo = /\.(mp3|wav|mp4|webm|m4a)($|\?)/i.test(url) || lower.includes('voiceover');
+
+          if ((isImageExt || isImageCDN) && !isAudioOrVideo) {
+            detectedImages.push({ url, slotName });
+            seenUrls.add(url);
           }
-        } else if (typeof obj === 'object') {
-          Object.values(obj).forEach(harvestImages);
         }
       };
 
-      (project.extracted_images || []).forEach(url => imageUrls.add(url));
-      (project.brand_assets?.images || []).forEach(url => imageUrls.add(url));
-      harvestImages(modifications);
+      // Traversal through backend response
+      (project.extracted_images || []).forEach((url, idx) => addImageCandidate(url, `Scraped Image #${idx + 1}`));
+      (project.brand_assets?.images || []).forEach((url, idx) => addImageCandidate(url, `Brand Image #${idx + 1}`));
 
-      const imageList = Array.from(imageUrls);
-      if (imageList.length === 0) {
+      // Traversal through Creatomate modifications dictionary
+      if (modifications && typeof modifications === 'object') {
+        Object.entries(modifications).forEach(([key, value]) => {
+          if (typeof value === 'string' && value.startsWith('http')) {
+            if (key.toLowerCase().includes('image') || key.toLowerCase().includes('photo') || key.toLowerCase().includes('logo') || key.toLowerCase().includes('media')) {
+              addImageCandidate(value, `Slot: ${key}`);
+            }
+          }
+        });
+      }
+
+      // Deduplicate by URL while keeping slot names recorded
+      const uniqueImagesMap = new Map();
+      detectedImages.forEach(item => {
+        if (!uniqueImagesMap.has(item.url)) {
+          uniqueImagesMap.set(item.url, [item.slotName]);
+        } else {
+          uniqueImagesMap.get(item.url).push(item.slotName);
+        }
+      });
+
+      if (uniqueImagesMap.size === 0) {
         imageGrid.innerHTML = '<p style="color: #adb5bd; margin: 0; grid-column: 1 / -1;">No image assets found for this ad project.</p>';
       } else {
-        imageList.forEach((imgUrl, idx) => {
+        uniqueImagesMap.forEach((slots, imgUrl) => {
           const card = document.createElement('div');
           card.style.cssText = 'background: #0f1114; border: 1px solid #343a40; border-radius: 6px; overflow: hidden; display: flex; flex-direction: column;';
           card.innerHTML = `
             <div style="height: 130px; background: #000; display: flex; align-items: center; justify-content: center; padding: 8px;">
-              <img src="${imgUrl}" style="max-height: 100%; max-width: 100%; object-fit: contain;" alt="Asset ${idx + 1}" onerror="this.onerror=null;this.src='https://via.placeholder.com/150?text=Image+Load+Error';">
+              <img src="${imgUrl}" style="max-height: 100%; max-width: 100%; object-fit: contain;" alt="Asset" onerror="this.onerror=null;this.src='https://via.placeholder.com/150?text=Image+Load+Error';">
             </div>
             <div style="padding: 8px; display: flex; flex-direction: column; gap: 6px; background: #1a1d20;">
+              <span style="font-size: 0.75rem; color: #0dcaf0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${slots.join(', ')}</span>
               <a href="${imgUrl}" target="_blank" style="background: #0dcaf0; color: #000; text-align: center; padding: 4px; border-radius: 4px; text-decoration: none; font-size: 0.8rem; font-weight: 600;">🔍 View Original</a>
               <button onclick="copyToClipboard('${imgUrl}', 'Image link copied!')" style="background: #2b3035; color: #fff; border: 1px solid #495057; padding: 4px; border-radius: 4px; cursor: pointer; font-size: 0.8rem;">🔗 Copy Link</button>
             </div>
