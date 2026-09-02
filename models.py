@@ -8,6 +8,11 @@ import httpx
 from dotenv import load_dotenv
 from pathlib import Path
 
+import logging
+
+# Add this line near the top of models.py
+logger = logging.getLogger("ai_ad_engine.models")
+
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
@@ -188,39 +193,67 @@ class Storage:
         return object_path
 
     def _sync_related_records(self, project: VideoProject, storage_path: Optional[str]) -> None:
+        """Sync related database records for brand assets, scripts, voiceovers, and renders."""
         if project.brand_assets:
-            self._upsert_record("ad_brand_assets", {
-                "project_id": project.id,
-                "asset_data": project.brand_assets.model_dump(mode="json"),
-                "updated_at": project.updated_at.isoformat(),
-            }, "project_id")
+            try:
+                self._upsert_record("ad_brand_assets", {
+                    "project_id": project.id,
+                    "asset_data": project.brand_assets.model_dump(mode="json"),
+                    "updated_at": project.updated_at.isoformat(),
+                }, "project_id")
+            except Exception as exc:
+                logger.warning("Failed to sync ad_brand_assets record for project %s: %s", project.id, exc)
+
         if project.script:
-            self._upsert_record("ad_scripts", {
-                "project_id": project.id,
-                "version": project.version,
-                "duration": project.script.duration,
-                "scenes": [scene.model_dump(mode="json") for scene in project.script.scenes],
-                "updated_at": project.updated_at.isoformat(),
-            }, "project_id,version")
+            try:
+                self._upsert_record("ad_scripts", {
+                    "project_id": project.id,
+                    "version": project.version,
+                    "duration": project.script.duration,
+                    "scenes": [scene.model_dump(mode="json") for scene in project.script.scenes],
+                    "updated_at": project.updated_at.isoformat(),
+                }, "project_id,version")
+            except Exception as exc:
+                logger.warning("Failed to sync ad_scripts record for project %s: %s", project.id, exc)
+
         if project.voice:
-            self._upsert_record("ad_voiceovers", {
-                "project_id": project.id,
-                "version": project.version,
-                "total_duration": project.voice.total_duration,
-                "segments": [segment.model_dump(mode="json") for segment in project.voice.segments],
-                "updated_at": project.updated_at.isoformat(),
-            }, "project_id,version")
+            try:
+                self._upsert_record("ad_voiceovers", {
+                    "project_id": project.id,
+                    "version": project.version,
+                    "total_duration": project.voice.total_duration,
+                    "segments": [segment.model_dump(mode="json") for segment in project.voice.segments],
+                    "updated_at": project.updated_at.isoformat(),
+                }, "project_id,version")
+            except Exception as exc:
+                logger.warning("Failed to sync ad_voiceovers record for project %s: %s", project.id, exc)
+
         if project.preview_url:
-            self._upsert_record("ad_renders", {
+            # Construct render payload safely with essential core columns
+            render_payload = {
                 "project_id": project.id,
                 "version": project.version,
-                "template_id": project.template_id,
                 "storage_path": storage_path or project.preview_url.removeprefix("/media/"),
                 "preview_url": project.preview_url,
-                "creatomate_modifications": project.creatomate_modifications or {},
-                "layers": project.layers or {},
                 "updated_at": project.updated_at.isoformat(),
-            }, "project_id,version")
+            }
+
+            # Safely include optional metadata fields if present on the model instance
+            if getattr(project, "template_id", None):
+                render_payload["template_id"] = project.template_id
+
+            if getattr(project, "creatomate_modifications", None) is not None:
+                render_payload["creatomate_modifications"] = project.creatomate_modifications
+
+            if getattr(project, "layers", None) is not None:
+                render_payload["layers"] = project.layers
+
+            try:
+                self._upsert_record("ad_renders", render_payload, "project_id,version")
+            except Exception as exc:
+                # Log a non-fatal warning so missing DB columns don't crash the video generation job
+                logger.warning("Non-fatal error: Failed to upsert to ad_renders for project %s: %s", project.id, exc)
+        
 
     def get_media(self, object_path: str) -> tuple[bytes, str]:
         if not self.using_supabase:
