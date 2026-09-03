@@ -281,6 +281,85 @@
     #ad-resources-panel button {
       transition: all 0.2s;
     }
+        /* Documentation Slideout Drawer */
+    .docs-drawer {
+      position: fixed;
+      top: 0;
+      right: -550px;
+      width: 500px;
+      max-width: 90vw;
+      height: 100vh;
+      background: rgba(10, 13, 20, 0.96);
+      backdrop-filter: blur(16px);
+      border-left: 1px solid rgba(0, 242, 254, 0.2);
+      box-shadow: -10px 0 30px rgba(0, 0, 0, 0.8);
+      z-index: 2000;
+      transition: right 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .docs-drawer.open {
+      right: 0;
+    }
+
+    .docs-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+      backdrop-filter: blur(4px);
+      z-index: 1999;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+    }
+
+    .docs-overlay.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .docs-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .docs-body {
+      padding: 20px;
+      overflow-y: auto;
+      color: #cbd5e1;
+      font-size: 0.88rem;
+      line-height: 1.6;
+    }
+
+    .docs-body h1, .docs-body h2, .docs-body h3 {
+      color: #f8fafc;
+      margin-top: 20px;
+      margin-bottom: 10px;
+    }
+
+    .docs-body h2 {
+      font-size: 1.1rem;
+      border-bottom: 1px solid rgba(0, 242, 254, 0.2);
+      padding-bottom: 4px;
+    }
+
+    .docs-body ul {
+      padding-left: 20px;
+      margin-bottom: 12px;
+    }
+
+    .docs-body code {
+      background: #1e293b;
+      color: #38bdf8;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 0.8rem;
+    }
   </style>
 </head>
 <body>
@@ -296,6 +375,9 @@
         </div>
       </div>
       <div class="badge">PROTOTYPE</div>
+      <button onclick="toggleDocsDrawer()" style="background: rgba(0, 242, 254, 0.1); border: 1px solid rgba(0, 242, 254, 0.3); color: #00f2fe; padding: 6px 12px; border-radius: 6px; font-size: 0.8rem; font-weight: 600; cursor: pointer; transition: all 0.2s ease;">
+        📚 Docs & Specs
+      </button>
     </header>
 
     <main>
@@ -829,6 +911,89 @@
     document.getElementById('variantSelector').addEventListener('change', () => {
       if (latestProject) renderVideoBatch(latestProject);
     });
+
+    function toggleDocsDrawer() {
+      const drawer = document.getElementById('docs-drawer');
+      const overlay = document.getElementById('docs-overlay');
+      if (drawer && overlay) {
+        drawer.classList.toggle('open');
+        overlay.classList.toggle('active');
+      }
+    }
   </script>
+
+      <!-- Backdrop Overlay -->
+    <div id="docs-overlay" class="docs-overlay" onclick="toggleDocsDrawer()"></div>
+
+    <!-- Slideout Documentation Drawer -->
+    <div id="docs-drawer" class="docs-drawer">
+      <div class="docs-header">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-weight: 700; color: #f8fafc;">System Architecture & Docs</span>
+        </div>
+        <button onclick="toggleDocsDrawer()" style="background: transparent; border: none; color: #94a3b8; font-size: 1.2rem; cursor: pointer;">✕</button>
+      </div>
+
+      <div class="docs-body">
+        <h2>1. Executive Overview & Architecture</h2>
+        <p>The AI Video Ad Engine automatically converts any public business website URL into three distinct, production-ready video ads. It orchestrates asset harvesting, script generation, voiceover synthesis, AI visual generation, dynamic fallback management, and multi-template video composition.</p>
+
+        <h2>2. Pipeline Workflow Breakdown</h2>
+        <ul>
+          <li><strong>1. Scraping & Asset Extraction:</strong> Parses target HTML to JSON, capturing brand colors, value props, and images.</li>
+          <li><strong>2. LLM Scripting:</strong> Processes metadata through LLM APIs into scene breakdowns and visual prompts.</li>
+          <li><strong>3. Voiceover Processing:</strong> Synthesizes audio and stitches multi-scene tracks using container-level <code>FFmpeg</code>.</li>
+          <li><strong>4. Multi-Tier Visual AI:</strong> Primary: Pollinations AI (FLUX) ➔ Secondary: Fal.ai/HuggingFace ➔ Tertiary: Pexels API.</li>
+          <li><strong>5. Video Assembly:</strong> Merges cached public assets, text overlays, and audio in Creatomate API to output MP4s.</li>
+          <li><strong>6. In-Dashboard Editor:</strong> Allows live inspection of scripts, audio tracks, and visual assets with instant re-render capabilities.</li>
+        </ul>
+
+        <h2>3. Infrastructure & Core Stack</h2>
+        <ul>
+          <li><strong>Backend:</strong> Python 3.13 / FastAPI</li>
+          <li><strong>Media Processing:</strong> FFmpeg (Nixpacks buildpack)</li>
+          <li><strong>Database & Storage:</strong> Supabase / PostgreSQL</li>
+          <li><strong>Deployment & CI/CD:</strong> Railway Cloud</li>
+          <li><strong>Frontend:</strong> HTML5 / CSS3 / JS (Code Club Dark Mode)</li>
+        </ul>
+
+        <h2>4. API Usage: Free Tiers vs. Paid Tier Upgrades</h2>
+        
+        <h3>A. Video Rendering Engine (Creatomate)</h3>
+        <ul>
+          <li><strong>Current Free Tier:</strong> 50 free video renders per month.</li>
+          <li><strong>Paid Upgrade Options:</strong> Starter Plan (~$41–$49/mo) for ~2,000 renders without watermarks; Growth Plan (~$99–$129/mo) for high-volume priority queues and <strong>Creatomate JS SDK</strong> access.</li>
+          <li><strong>JS SDK Advantages:</strong> Enables in-browser WebGL canvas video previews, allowing users to make live text or image edits locally without incurring backend API costs or render latency.</li>
+        </ul>
+
+        <h3>B. Visual Generation Tiers (Pollinations / Fal.ai / Hugging Face)</h3>
+        <ul>
+          <li><strong>Current Free Tier:</strong> Unlimited public generation via Pollinations AI (with server 500 fallback handling); free tier credits on Fal.ai/Hugging Face.</li>
+          <li><strong>Paid Upgrade Options:</strong> Dedicated FLUX worker instances on Fal.ai/Replicate ($0.001 - $0.003 / image).</li>
+          <li><strong>Advantages:</strong> Eliminates stock photo fallback triggers and guarantees sub-3-second image generation.</li>
+        </ul>
+
+        <h3>C. Voice Synthesis (ElevenLabs)</h3>
+        <ul>
+          <li><strong>Current Free Tier:</strong> 10,000 characters/month (~20 video ad scripts).</li>
+          <li><strong>Paid Upgrade Options:</strong> Starter Plan ($5/mo) for 30,000 chars; Creator Plan ($22/mo) for 100,000 chars.</li>
+          <li><strong>Advantages:</strong> Unlocks custom brand voice cloning and full commercial rights.</li>
+        </ul>
+
+        <h3>D. Database & CDN (Supabase)</h3>
+        <ul>
+          <li><strong>Current Free Tier:</strong> 500 MB DB + 1 GB Storage + 2 GB Bandwidth.</li>
+          <li><strong>Paid Upgrade Options:</strong> Pro Plan ($25/mo) for 8 GB DB + 100 GB Storage + auto-backups.</li>
+          <li><strong>Advantages:</strong> Prevents schema cache locks and provides permanent CDN storage for historical ad assets.</li>
+        </ul>
+
+        <h3>E. Cloud Hosting (Railway)</h3>
+        <ul>
+          <li><strong>Current Free Tier:</strong> $5 trial execution credit.</li>
+          <li><strong>Paid Upgrade Options:</strong> Hobby/Pro Plan ($5/mo base + usage).</li>
+          <li><strong>Advantages:</strong> Dedicated CPU/RAM allocations, eliminating worker timeouts during heavy <code>FFmpeg</code> audio stitching.</li>
+        </ul>
+      </div>
+    </div>
 </body>
 </html>
