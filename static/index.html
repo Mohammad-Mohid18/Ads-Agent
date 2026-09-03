@@ -286,8 +286,15 @@
 <body>
 
   <div class="container">
-    <header>
-      <div class="brand">CODECLUB <span>| ADs GENERATIVE AGENT</span></div>
+    <header style="background: rgba(10, 13, 20, 0.85); backdrop-filter: blur(12px); border-bottom: 1px solid rgba(0, 242, 254, 0.15); padding: 12px 24px; position: sticky; top: 0; z-index: 1000; display: flex; align-items: center; justify-content: space-between;">
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <a href="https://www.codeclub.tech/" target="_blank" style="display: flex; align-items: center; text-decoration: none;">
+          <img src="/static/logo.png" alt="Code Club Logo" style="height: 38px; width: 38px; border-radius: 50%; object-fit: cover; filter: drop-shadow(0 0 8px rgba(0, 242, 254, 0.4)); border: 1px solid rgba(0, 242, 254, 0.3);" onerror="this.onerror=null; this.src='https://via.placeholder.com/38/00f2fe/000000?text=CC';">
+        </a>
+        <div class="brand">
+          CODECLUB <span style="background: linear-gradient(135deg, #00f2fe, #4facfe); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent;">| ADs GENERATIVE AGENT</span>
+        </div>
+      </div>
       <div class="badge">PROTOTYPE</div>
     </header>
 
