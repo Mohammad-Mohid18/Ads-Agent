@@ -287,14 +287,14 @@
 
   <div class="container">
     <header>
-      <div class="brand">CODECLUB <span>| AD FOUNDRY</span></div>
+      <div class="brand">CODECLUB <span>| ADs GENERATIVE AGENT</span></div>
       <div class="badge">PROTOTYPE</div>
     </header>
 
     <main>
-      <div class="hero-tag">WEBSITE TO VIDEO AD BATCH</div>
-      <h1>Turn your business site into 3 polished video ads.</h1>
-      <p class="subtitle">Paste a business website URL. We will extract brand assets, write a script, generate voiceovers, and render 3 unique template variations sequentially.</p>
+      <div class="hero-tag">TURN URL INTO HIGH-CONVERTING VIDEO ADS</div>
+      <h1>Instant Autonomous Video Ad Generation.</h1>
+      <p class="subtitle">Input your URL to trigger our end-to-end media engine. From asset extraction to voiceover stitching and sequential video rendering, launch production-ready ads instantly.</p>
 
       <!-- URL Form -->
       <form id="adForm" onsubmit="generateAd(event)">
@@ -303,7 +303,7 @@
           <button type="submit" class="btn-submit" id="submitBtn">Create 3 Ads</button>
         </div>
       </form>
-      <p class="help-text">Start with a public business website. All 3 ad styles will generate automatically.</p>
+      <p class="help-text">One business link. Three distinct AI-rendered video ad campaigns—generated automatically.</p>
 
       <section class="load-session" aria-label="Load existing ad for editing">
         <input type="text" id="existingAdId" placeholder="Ad ID / Project ID" aria-label="Ad ID or Project ID" />
@@ -315,11 +315,11 @@
         <button type="button" class="btn-submit" onclick="loadExistingAd()">Load Ad</button>
       </section>
 
-      <div class="spinner" id="loader">Generating video ads... (Scraping, scripting, voice synthesis, and rendering)</div>
+      <div class="spinner" id="loader">Generating video ads... (Scraping, scripting, prompting, voice synthesis, visuals generation and video composing)</div>
 
       <!-- Editor & Batch Section -->
       <div class="editor-section" id="editorSection">
-        <h3 style="margin-bottom: 20px;">Generated Ad Variations</h3>
+        <h3 style="margin-bottom: 20px;">Ads Variations</h3>
         
         <!-- 3 Video Players rendered dynamically -->
         <div class="video-batch-grid" id="videoBatchContainer"></div>
@@ -348,7 +348,7 @@
     <div id="ad-resources-panel" style="display: none; background: var(--card-bg); color: #ffffff; border: 1px solid var(--border); border-radius: 16px; padding: 24px; margin-top: 24px;">
       
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-        <h3 style="font-size: 1.25rem; font-weight: 600; margin: 0; color: #f8f9fa;">📁 Generated Ad Resources</h3>
+        <h3 style="font-size: 1.25rem; font-weight: 600; margin: 0; color: #f8f9fa;">📁 Resource Panel</h3>
         <button onclick="copyFullScript()" style="background: var(--card-inner); color: #fff; border: 1px solid var(--border); padding: 6px 12px; border-radius: 6px; cursor: pointer;">📋 Copy Script</button>
       </div>
 
