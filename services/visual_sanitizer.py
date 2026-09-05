@@ -231,6 +231,8 @@ __all__ = [
     "get_pollinations_fallback_url",
     "get_pollinations_fallback_image",
 ]
+import asyncio
+import re
 
 async def generate_image_pollinations(
     prompt: str,
@@ -241,9 +243,12 @@ async def generate_image_pollinations(
     """
     Primary Generator: Fetches FLUX-generated visual bytes from Pollinations AI
     and uploads them directly to Supabase storage to give Creatomate permanent CDN access.
+    Includes automated retry handling for 429 Rate Limit responses.
     """
+    # Clean prompt text to prevent special character URL encoding issues
+    clean_prompt = re.sub(r"[^\w\s,-]", "", prompt.strip())[:180]
     enhanced_prompt = (
-        f"High quality advertisement photography of {prompt.strip()}, "
+        f"High quality advertisement photography of {clean_prompt}, "
         f"hyperrealistic 8k, cinematic lighting, sharp focus, commercial studio quality, no text or logo"
     )
     encoded_prompt = quote(enhanced_prompt)
@@ -254,24 +259,44 @@ async def generate_image_pollinations(
         f"?width={width}&height={height}&model=flux&nologo=true&enhance=true&seed={scene_idx + 10}"
     )
 
-    try:
-        logger.info("Generating Pollinations AI (FLUX) image for scene %d...", scene_idx + 1)
-        async with httpx.AsyncClient(timeout=35.0, follow_redirects=True) as client:
-            res = await client.get(pollinations_api_url)
-            
-            if res.status_code == 200 and len(res.content) > 2000:
-                object_path = (
-                    f"media/images/{project_id or 'generated'}/"
-                    f"pollination_scene_{scene_idx + 1}_{uuid.uuid4().hex[:10]}.png"
+    max_retries = 2
+    retry_delay = 3.0  # Seconds to pause on 429 Rate Limit
+
+    async with httpx.AsyncClient(timeout=35.0, follow_redirects=True) as client:
+        for attempt in range(max_retries):
+            try:
+                logger.info(
+                    "Generating Pollinations AI (FLUX) image for scene %d (Attempt %d/%d)...", 
+                    scene_idx + 1, attempt + 1, max_retries
                 )
-                # Upload raw PNG bytes to Supabase Storage
-                public_url = await upload_bytes(object_path, res.content, "image/png")
-                logger.info("Pollinations AI generated scene %d -> Uploaded: %s", scene_idx + 1, public_url)
-                return public_url
-            else:
+                res = await client.get(pollinations_api_url)
+                
+                if res.status_code == 200 and len(res.content) > 2000:
+                    object_path = (
+                        f"media/images/{project_id or 'generated'}/"
+                        f"pollination_scene_{scene_idx + 1}_{uuid.uuid4().hex[:10]}.png"
+                    )
+                    # Upload raw PNG bytes to Supabase Storage
+                    public_url = await upload_bytes(object_path, res.content, "image/png")
+                    logger.info("Pollinations AI generated scene %d -> Uploaded: %s", scene_idx + 1, public_url)
+                    return public_url
+                
+                elif res.status_code == 429:
+                    logger.warning(
+                        "Pollinations 429 Rate Limit for scene %d. Pausing %.1fs before retry...", 
+                        scene_idx + 1, retry_delay
+                    )
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay)
+                        retry_delay *= 1.5  # Slight exponential backoff
+                        continue
+
                 logger.warning("Pollinations HTTP status %d or empty payload for scene %d", res.status_code, scene_idx + 1)
-    except Exception as exc:
-        logger.warning("Pollinations AI request failed for scene %d: %s", scene_idx + 1, exc)
+                
+            except Exception as exc:
+                logger.warning("Pollinations AI attempt %d failed for scene %d: %s", attempt + 1, scene_idx + 1, exc)
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1.5)
 
     return None
 
