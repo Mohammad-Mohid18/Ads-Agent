@@ -41,6 +41,13 @@ NICHE_VISUAL_DEFAULTS = {
         "Dynamic tech team gathered around a modern conference table reviewing software architecture",
         "Modern laptop displaying clean code and dashboard in a bright sunlit tech office",
     ],
+        # Add to NICHE_VISUAL_DEFAULTS in your sanitizer / visual service:
+    "Outdoors & Tactical Gear": [
+        "High-end tactical outdoor apparel and rugged gear displayed in a clean modern showroom",
+        "Close-up of durable outdoor equipment and precision accessories on a dark slate background",
+        "Cinematic outdoor photography of adventure gear in rugged wilderness lighting",
+        "Professional product display of tactical boots, backpacks, and outdoor utilities",
+    ],
     "HVAC & Climate Control": [
         "Modern service van parked outside a clean suburban home",
         "Certified technician inspecting high-efficiency air conditioning condenser",
