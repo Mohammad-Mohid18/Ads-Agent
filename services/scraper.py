@@ -12,6 +12,7 @@ logger = logging.getLogger("ai_ad_engine.scraper")
 
 # Keyword maps for business niche classification
 NICHE_MAPPINGS = [
+    (r"\b(ecommerce|shop|store|cart|buy online|retail)\b", "E-Commerce & Digital Retail"),
     (r"\b(code|coding|software|developer|programming|bootcamp|club|web development|dev|tech|tech workspace|python|javascript|fullstack|engineering)\b", "Software & Technology"),
     (r"\b(hvac|air condition|heating|furnace|duct|cooling|ventilation|ac repair)\b", "HVAC & Climate Control"),
     (r"\b(real estate|realtor|realty|property|villas|condos|apartments|homes for sale|mortgage)\b", "Luxury Real Estate"),
@@ -29,7 +30,6 @@ NICHE_MAPPINGS = [
     (r"\b(construct|remodel|renovat|contractor|builder|carpentry)\b", "Construction & Home Remodeling"),
     (r"\b(vet|veterinar|animal hospital|pet care|dog grooming)\b", "Veterinary & Pet Care Services"),
     (r"\b(cloth|apparel|fashion|boutique|jewelry|shoes|wear|accessories)\b", "Fashion & Apparel Retail"),
-    (r"\b(ecommerce|shop|store|cart|buy online|retail)\b", "E-Commerce & Digital Retail"),
 ]
 
 # Niche-specific default visual elements for rich image synthesis
