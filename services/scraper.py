@@ -14,6 +14,7 @@ logger = logging.getLogger("ai_ad_engine.scraper")
 NICHE_MAPPINGS = [
     (r"\b(ecommerce|shop|store|cart|buy online|retail)\b", "E-Commerce & Digital Retail"),
     (r"\b(code|coding|software|developer|programming|bootcamp|club|web development|dev|tech|tech workspace|python|javascript|fullstack|engineering)\b", "Software & Technology"),
+    (r"\b(tactical|firearms|outdoor|hunting|shooting|defense|military|gear)\b","Outdoors & Tactical Gear"),
     (r"\b(hvac|air condition|heating|furnace|duct|cooling|ventilation|ac repair)\b", "HVAC & Climate Control"),
     (r"\b(real estate|realtor|realty|property|villas|condos|apartments|homes for sale|mortgage)\b", "Luxury Real Estate"),
     (r"\b(coffee|roast|espresso|cafe|barista|latte|brew)\b", "Artisan Coffee Shop & Roastery"),
